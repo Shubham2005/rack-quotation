@@ -1,0 +1,2355 @@
+import React, { useState, useMemo, useRef, useEffect } from "react";
+import html2canvas from "html2canvas";
+import {
+  ShoppingCart,
+  LayoutGrid,
+  Ruler,
+  Wrench,
+  RefreshCcw,
+  Plus,
+  Minus,
+  Trash2,
+  PackagePlus,
+  Share2,
+  ListChecks,
+  Undo2,
+  Truck,
+  Layers,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react";
+
+// --- EXPANDED MOCK PRICING ---
+const MOCK_PRICING = {
+  slotted: {
+    hardware: { bolt: 2.5, corner: 7, bush: 5 },
+    plates: {
+      "2-12": { 22: 175, 20: 275, 18: 400 },
+      "2-15": { 22: 215, 20: 320, 18: 475 },
+      "2-18": { 22: 255, 20: 375, 18: 550 },
+      "2-24": { 22: 335, 20: 470, 18: 620 },
+      "3-12": { 22: 230, 20: 350, 18: 480 },
+      "3-15": { 22: 275, 20: 410, 18: 545 },
+      "3-18": { 22: 320, 20: 470, 18: 620 },
+      "3-24": { 22: 410, 20: 570, 18: 730 },
+      "4-12": { 22: 320, 20: 470, 18: 620 },
+      "4-15": { 22: 375, 20: 530, 18: 685 },
+      "4-18": { 22: 430, 20: 590, 18: 750 },
+      "4-24": { 22: 540, 20: 750, 18: 960 },
+    },
+    angles: {
+      3: { 16: 90, 14: 120 },
+      4: { 16: 120, 14: 160 },
+      5: { 16: 135, 14: 180 },
+      6: { 16: 165, 14: 220 },
+      6.5: { 16: 180, 14: 240 },
+      7: { 16: 198, 14: 264 },
+      8: { 16: 225, 14: 300 },
+      10: { 16: 270, 14: 360 },
+    },
+  },
+  wall: {
+    plates: {
+      "35.5-6.25": 240,
+      "35.5-9.25": 290,
+      "35.5-12.25": 330,
+      "35.5-14.25": 365,
+      "35.5-16.25": 400,
+      "47.5-6.25": 320,
+      "47.5-9.25": 390,
+      "47.5-12.25": 440,
+      "47.5-14.25": 490,
+      "47.5-16.25": 540,
+    },
+    channels: { 4: 190, 6: 240 },
+    brackets: { 7: 55, 10: 60, 13: 65, 15: 70, 17: 75 },
+    stoppers: { 3: 75, 4: 110 },
+    hardware: { screw: 2 },
+  },
+};
+
+const MAX_RACKS = 100;
+const MAX_SHELVES = 15;
+
+// Mappings for Wall Mounted logic
+const WALL_BRACKET_MAP = { 6.25: 7, 9.25: 10, 12.25: 13, 14.25: 15, 16.25: 17 };
+const WALL_STOPPER_MAP = { 35.5: 3, 47.5: 4 };
+
+// --- SVG DRAWING COMPONENT ---
+const RackSchematic = ({ item }) => {
+  const { type, bays, shelvesPerRack, dimensions } = item;
+  const heightFt = parseFloat(dimensions.height);
+  const breadthInches = parseFloat(dimensions.breadth);
+  const isWall = type === "wall";
+
+  const scale = 30;
+  const paddingX = 40;
+  const paddingY = 30;
+
+  // --- Front View Math (Width) ---
+  const totalWidthFt = bays.reduce(
+    (a, b) => a + (isWall ? Math.round(b / 12) : b),
+    0,
+  );
+  const frontSvgWidth = totalWidthFt * scale + paddingX * 2;
+  const svgHeight = heightFt * scale + paddingY * 2;
+
+  let currentX = paddingX;
+  const frontUprights = [currentX];
+  const bayCenters = [];
+
+  bays.forEach((bay) => {
+    const bayFt = isWall ? Math.round(bay / 12) : bay;
+    const bayPixels = bayFt * scale;
+    bayCenters.push({
+      x: currentX + bayPixels / 2,
+      label: isWall ? `${bay}"` : `${bay}'`,
+    });
+    currentX += bayPixels;
+    frontUprights.push(currentX);
+  });
+
+  // --- Side View Math (Depth) ---
+  const depthFt = breadthInches / 12;
+  const sideSvgWidth = depthFt * scale + paddingX * 2;
+
+  const shelves = [];
+  const shelfSpacing =
+    (heightFt * scale) / (shelvesPerRack > 1 ? shelvesPerRack - 1 : 1);
+  for (let i = 0; i < shelvesPerRack; i++) {
+    shelves.push(paddingY + i * shelfSpacing);
+  }
+
+  return (
+    <div className="flex flex-col items-center bg-gray-800/50 p-4 rounded-lg border border-gray-700 w-full">
+      <p className="text-xs text-gray-400 mb-4 font-bold uppercase tracking-wider flex items-center gap-2">
+        {isWall ? "Wall Mounted Rack" : "Slotted Angle Rack"}
+      </p>
+
+      {/* Forced Side-by-Side Row Layout */}
+      <div className="flex flex-row items-center justify-center gap-2 sm:gap-6 w-full">
+        {/* FRONT ELEVATION (WIDTH) - 65% Width */}
+        <div className="flex flex-col items-center w-[65%] border-r border-gray-700 pr-2 sm:pr-4">
+          <span className="text-[9px] sm:text-[10px] text-gray-500 mb-2 font-mono text-center">
+            FRONT VIEW (WIDTH)
+          </span>
+          <svg
+            viewBox={`0 0 ${frontSvgWidth} ${svgHeight + 20}`}
+            className="w-full max-h-40 object-contain drop-shadow-md"
+          >
+            {shelves.map((y, idx) => (
+              <line
+                key={`f-shelf-${idx}`}
+                x1={paddingX}
+                y1={y}
+                x2={currentX}
+                y2={y}
+                stroke="#60A5FA"
+                strokeWidth="4"
+                strokeLinecap="round"
+              />
+            ))}
+            {frontUprights.map((x, idx) => (
+              <line
+                key={`f-upright-${idx}`}
+                x1={x}
+                y1={paddingY - 5}
+                x2={x}
+                y2={svgHeight - paddingY + 5}
+                stroke={isWall ? "#818CF8" : "#9CA3AF"}
+                strokeWidth={isWall ? "4" : "6"}
+                strokeLinecap="round"
+              />
+            ))}
+            {bayCenters.map((bay, idx) => (
+              <text
+                key={`bay-label-${idx}`}
+                x={bay.x}
+                y={svgHeight - paddingY + 25}
+                fill="#9CA3AF"
+                fontSize="12"
+                fontWeight="bold"
+                textAnchor="middle"
+              >
+                {bay.label}
+              </text>
+            ))}
+            <text
+              x={paddingX - 15}
+              y={paddingY + (heightFt * scale) / 2}
+              fill="#9CA3AF"
+              fontSize="12"
+              fontWeight="bold"
+              textAnchor="end"
+              dominantBaseline="middle"
+            >
+              {heightFt}'
+            </text>
+            <line
+              x1={paddingX - 8}
+              y1={paddingY}
+              x2={paddingX - 8}
+              y2={svgHeight - paddingY}
+              stroke="#4B5563"
+              strokeWidth="1"
+              strokeDasharray="4 4"
+            />
+          </svg>
+        </div>
+
+        {/* SIDE ELEVATION (DEPTH) - 35% Width */}
+        <div className="flex flex-col items-center w-[35%] pl-1 sm:pl-2">
+          <span className="text-[9px] sm:text-[10px] text-gray-500 mb-2 font-mono text-center">
+            SIDE VIEW (DEPTH)
+          </span>
+          <svg
+            viewBox={`0 0 ${sideSvgWidth} ${svgHeight + 20}`}
+            className="w-full max-h-40 object-contain drop-shadow-md"
+          >
+            {shelves.map((y, idx) => (
+              <line
+                key={`s-shelf-${idx}`}
+                x1={paddingX}
+                y1={y}
+                x2={paddingX + depthFt * scale}
+                y2={y}
+                stroke="#60A5FA"
+                strokeWidth="4"
+                strokeLinecap="round"
+              />
+            ))}
+            <line
+              x1={paddingX}
+              y1={paddingY - 5}
+              x2={paddingX}
+              y2={svgHeight - paddingY + 5}
+              stroke={isWall ? "#818CF8" : "#9CA3AF"}
+              strokeWidth={isWall ? "4" : "6"}
+              strokeLinecap="round"
+            />
+            {!isWall && (
+              <line
+                x1={paddingX + depthFt * scale}
+                y1={paddingY - 5}
+                x2={paddingX + depthFt * scale}
+                y2={svgHeight - paddingY + 5}
+                stroke="#9CA3AF"
+                strokeWidth="6"
+                strokeLinecap="round"
+              />
+            )}
+            <text
+              x={paddingX + (depthFt * scale) / 2}
+              y={svgHeight - paddingY + 25}
+              fill="#9CA3AF"
+              fontSize="12"
+              fontWeight="bold"
+              textAnchor="middle"
+            >
+              {breadthInches}"
+            </text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const RackConfigurator = () => {
+  // --- CORE STATE ---
+  const [activeTab, setActiveTab] = useState("slotted"); // 'slotted' | 'wall'
+  const [cart, setCart] = useState([]);
+  const [expandedCartId, setExpandedCartId] = useState(null);
+  const [customerPhone, setCustomerPhone] = useState("");
+
+  // --- BUILDER STATE ---
+  const [hoveredCell, setHoveredCell] = useState({ x: 0, y: 0 });
+  const [selectedCell, setSelectedCell] = useState({ x: 0, y: 0 });
+  const [buildMode, setBuildMode] = useState("standard");
+  const [mixedBays, setMixedBays] = useState([]);
+  const [mixedShelves, setMixedShelves] = useState(4);
+  const [customItem, setCustomItem] = useState({ category: "plates", qty: 1 });
+
+  // Slotted Dimensions
+  const [slottedDims, setSlottedDims] = useState({
+    length: "3",
+    breadth: "12",
+    height: "6",
+    plateGauge: 22,
+    angleGauge: 16,
+  });
+  // Wall Dimensions
+  const [wallDims, setWallDims] = useState({
+    length: "35.5",
+    breadth: "9.25",
+    height: "6",
+    hasStopper: false,
+  });
+
+  const [overrides, setOverrides] = useState({});
+  const [isCapturing, setIsCapturing] = useState(false);
+
+  // --- CHARGES STATE ---
+  const [slottedFittingRate, setSlottedFittingRate] = useState(20);
+  const [wallFittingRate, setWallFittingRate] = useState(100);
+  const [rickshawRent, setRickshawRent] = useState("");
+  const [isFittingOpted, setIsFittingOpted] = useState(false);
+
+  const quoteRef = useRef(null);
+  const scrollContainerRef = useRef(null);
+
+  // Reset grid & scrolling when modes switch
+  useEffect(() => {
+    setSelectedCell({ x: 0, y: 0 });
+    setMixedBays([]);
+    setCustomItem({ category: "plates", qty: 1 });
+    if (buildMode === "standard" && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop =
+        scrollContainerRef.current.scrollHeight;
+      scrollContainerRef.current.scrollLeft = 0;
+    }
+  }, [buildMode, activeTab]);
+
+  const handleDimChange = (e, type) => {
+    const { name, value, type: inputType, checked } = e.target;
+    const val =
+      inputType === "checkbox"
+        ? checked
+        : name.includes("Gauge")
+          ? parseInt(value)
+          : value;
+    if (type === "slotted")
+      setSlottedDims((prev) => ({ ...prev, [name]: val }));
+    else setWallDims((prev) => ({ ...prev, [name]: val }));
+  };
+
+  const handleGridClick = (x, y) => setSelectedCell({ x, y });
+
+  const handleStructureInputChange = (axis, value) => {
+    const val = value === "" ? "" : parseInt(value);
+    setSelectedCell((prev) => {
+      let newX = axis === "x" ? val : prev.x;
+      let newY = axis === "y" ? val : prev.y;
+      if (newX > MAX_RACKS) newX = MAX_RACKS;
+      if (newY > MAX_SHELVES) newY = MAX_SHELVES;
+      return { x: newX || 0, y: newY || 0 };
+    });
+  };
+
+  const handleAddToCart = () => {
+    let newBays = [];
+    let shelves = 0;
+    const isSlotted = activeTab === "slotted";
+    const currentLength = isSlotted ? slottedDims.length : wallDims.length;
+
+    if (buildMode === "standard") {
+      if (selectedCell.x === 0 || selectedCell.y === 0) return;
+      newBays = Array(selectedCell.x).fill(
+        isSlotted ? parseInt(currentLength) : parseFloat(currentLength),
+      );
+      shelves = selectedCell.y;
+    } else {
+      if (mixedBays.length === 0 || mixedShelves === 0) return;
+      newBays = [...mixedBays];
+      shelves = mixedShelves === "" ? 1 : mixedShelves;
+    }
+    const finalQty =
+      customItem.qty === "" || isNaN(customItem.qty) || customItem.qty < 1
+        ? 1
+        : customItem.qty;
+    const newItem = {
+      id: Date.now(),
+      type: activeTab,
+      dimensions: isSlotted ? { ...slottedDims } : { ...wallDims },
+      bays: newBays,
+      shelvesPerRack: shelves,
+      qty: 1,
+    };
+
+    setCart((prev) => [...prev, newItem]);
+    setSelectedCell({ x: 0, y: 0 });
+    setMixedBays([]);
+    setOverrides({});
+  };
+
+  const handleAddCustomItem = () => {
+    const isSlotted = activeTab === "slotted";
+    const dims = isSlotted ? slottedDims : wallDims;
+    let label = "";
+    let price = 0;
+    const category = customItem.category;
+
+    if (isSlotted) {
+      if (category === "plates") {
+        label = `${dims.length}'x${dims.breadth}" Plate (${dims.plateGauge}G)`;
+        price =
+          MOCK_PRICING.slotted.plates[`${dims.length}-${dims.breadth}`]?.[
+            dims.plateGauge
+          ] || 0;
+      } else if (category === "angles") {
+        label = `${dims.height}ft Angle (${dims.angleGauge}G)`;
+        price =
+          MOCK_PRICING.slotted.angles[dims.height]?.[dims.angleGauge] || 0;
+      } else if (category === "bolts") {
+        label = "Nut/Bolts";
+        price = MOCK_PRICING.slotted.hardware.bolt;
+      } else if (category === "corners") {
+        label = "Corner Supports";
+        price = MOCK_PRICING.slotted.hardware.corner;
+      } else if (category === "bushes") {
+        label = "Rubber Bushes";
+        price = MOCK_PRICING.slotted.hardware.bush;
+      }
+    } else {
+      if (category === "plates") {
+        label = `${dims.length}"x${dims.breadth}" Plate`;
+        price = MOCK_PRICING.wall.plates[`${dims.length}-${dims.breadth}`] || 0;
+      } else if (category === "channels") {
+        label = `${dims.height}ft Channel`;
+        price = MOCK_PRICING.wall.channels[dims.height] || 0;
+      } else if (category === "brackets") {
+        const bracketSize = WALL_BRACKET_MAP[dims.breadth];
+        label = `${bracketSize}" Bracket`;
+        price = MOCK_PRICING.wall.brackets[bracketSize] || 0;
+      } else if (category === "stoppers") {
+        const stopperSize = WALL_STOPPER_MAP[dims.length];
+        label = `${stopperSize}ft Stopper`;
+        price = MOCK_PRICING.wall.stoppers[stopperSize] || 0;
+      } else if (category === "screws") {
+        label = "Screws";
+        price = MOCK_PRICING.wall.hardware.screw;
+      }
+    }
+
+    const newItem = {
+      id: Date.now(),
+      type: activeTab,
+      isCustomPart: true,
+      partCategory: category,
+      partLabel: label,
+      partPrice: price,
+      qty: customItem.qty,
+      dimensions: { ...dims },
+      itemTotal: price * customItem.qty,
+    };
+
+    setCart((prev) => [...prev, newItem]);
+    setCustomItem((prev) => ({ ...prev, qty: 1 })); // reset quantity
+    setOverrides({});
+  };
+
+  const updateCartQty = (id, delta) => {
+    setCart((prev) =>
+      prev
+        .map((item) =>
+          item.id === id
+            ? { ...item, qty: Math.max(0, item.qty + delta) }
+            : item,
+        )
+        .filter((item) => item.qty > 0),
+    );
+    setOverrides({});
+  };
+
+  const handleOverrideChange = (itemKey, value) => {
+    const val = value === "" ? "" : parseInt(value);
+    setOverrides((prev) => ({ ...prev, [itemKey]: val }));
+  };
+
+  const handleShareSnapshot = async () => {
+    if (!quoteRef.current) return;
+    setIsCapturing(true);
+    try {
+      await new Promise((res) => setTimeout(res, 150)); // Slight delay to ensure UI updates
+
+      const canvas = await html2canvas(quoteRef.current, {
+        backgroundColor: "#111827",
+        scale: 3,
+        useCORS: true,
+      });
+
+      const imageBlob = await new Promise(
+        (resolve) => canvas.toBlob(resolve, "image/png", 1.0), // Max quality PNG
+      );
+      const file = new File([imageBlob], "VARUN_Quote.png", {
+        type: "image/png",
+      });
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          title: "VARUN Enterprise Quotation",
+          text: "Rack quotation from VARUN Enterprise",
+          files: [file],
+        });
+      } else {
+        const link = document.createElement("a");
+        link.href = canvas.toDataURL("image/png", 1.0);
+        link.download = "VARUN_Quote.png";
+        link.click();
+      }
+    } catch (err) {
+      alert("Something went wrong while generating the snapshot.");
+    } finally {
+      setIsCapturing(false);
+    }
+  };
+
+  const handleWhatsAppShare = async () => {
+    if (!customerPhone) {
+      alert("Please enter a 10-digit mobile number first.");
+      return;
+    }
+
+    let formattedNumber = customerPhone.replace(/\D/g, "");
+    if (formattedNumber.length === 10) {
+      formattedNumber = "91" + formattedNumber;
+    } else if (formattedNumber.length < 10) {
+      alert("Please enter a valid mobile number.");
+      return;
+    }
+
+    setIsCapturing(true);
+
+    try {
+      // 1. Generate the Image
+      await new Promise((res) => setTimeout(res, 150));
+      const canvas = await html2canvas(quoteRef.current, {
+        backgroundColor: "#111827",
+        scale: 2, // Standard scale for faster generation and copying
+        useCORS: true,
+      });
+
+      // 2. Convert Canvas to Blob
+      const blob = await new Promise((resolve) =>
+        canvas.toBlob(resolve, "image/png"),
+      );
+
+      // 3. Copy Image to Clipboard
+      try {
+        const item = new ClipboardItem({ "image/png": blob });
+        await navigator.clipboard.write([item]);
+      } catch (clipboardErr) {
+        console.warn(
+          "Clipboard write failed (might be blocked by browser):",
+          clipboardErr,
+        );
+        alert(
+          "Could not copy image to clipboard automatically. You can still use the Download button.",
+        );
+      }
+
+      // 4. Build a quick text summary to go with it
+      let textMessage = `*Quotation from VARUN Enterprise*\n`;
+      textMessage += `*Total:* ₹${quote.grandTotal.toLocaleString("en-IN", { maximumFractionDigits: 0 })}\n`;
+
+      const encodedMessage = encodeURIComponent(textMessage);
+      const whatsappUrl = `https://wa.me/${formattedNumber}?text=${encodedMessage}`;
+
+      // 5. Open WhatsApp
+      window.open(whatsappUrl, "_blank");
+    } catch (err) {
+      alert("Something went wrong while generating the quotation.");
+      console.error(err);
+    } finally {
+      setIsCapturing(false);
+    }
+  };
+
+  // --- CORE ENGINE ---
+  const quote = useMemo(() => {
+    if (cart.length === 0) return null;
+
+    // Slotted Aggregators
+    let sBolts = 0,
+      sCorners = 0,
+      sBushes = 0;
+    const sAnglesGrp = {};
+    const sPlatesGrp = {};
+    let totalSlottedPlates = 0;
+
+    // Wall Aggregators
+    let wScrews = 0;
+    let totalWallChannels = 0;
+    const wChannelsGrp = {};
+    const wPlatesGrp = {};
+    const wBracketsGrp = {};
+    const wStoppersGrp = {};
+
+    const enrichedCart = cart.map((item) => {
+      const { type, bays, shelvesPerRack, qty, dimensions: d } = item;
+      if (item.isCustomPart) {
+        if (type === "slotted") {
+          if (item.partCategory === "plates") {
+            if (!sPlatesGrp[item.partLabel])
+              sPlatesGrp[item.partLabel] = { qty: 0, price: item.partPrice };
+            sPlatesGrp[item.partLabel].qty += item.qty;
+            totalSlottedPlates += item.qty; // Integrates with fitting charges!
+          } else if (item.partCategory === "angles") {
+            if (!sAnglesGrp[item.partLabel])
+              sAnglesGrp[item.partLabel] = { qty: 0, price: item.partPrice };
+            sAnglesGrp[item.partLabel].qty += item.qty;
+          } else if (item.partCategory === "bolts") sBolts += item.qty;
+          else if (item.partCategory === "corners") sCorners += item.qty;
+          else if (item.partCategory === "bushes") sBushes += item.qty;
+        } else {
+          if (item.partCategory === "plates") {
+            if (!wPlatesGrp[item.partLabel])
+              wPlatesGrp[item.partLabel] = { qty: 0, price: item.partPrice };
+            wPlatesGrp[item.partLabel].qty += item.qty;
+          } else if (item.partCategory === "channels") {
+            if (!wChannelsGrp[item.partLabel])
+              wChannelsGrp[item.partLabel] = { qty: 0, price: item.partPrice };
+            wChannelsGrp[item.partLabel].qty += item.qty;
+            totalWallChannels += item.qty; // Integrates with fitting charges!
+          } else if (item.partCategory === "brackets") {
+            if (!wBracketsGrp[item.partLabel])
+              wBracketsGrp[item.partLabel] = { qty: 0, price: item.partPrice };
+            wBracketsGrp[item.partLabel].qty += item.qty;
+          } else if (item.partCategory === "stoppers") {
+            if (!wStoppersGrp[item.partLabel])
+              wStoppersGrp[item.partLabel] = { qty: 0, price: item.partPrice };
+            wStoppersGrp[item.partLabel].qty += item.qty;
+          } else if (item.partCategory === "screws") wScrews += item.qty;
+        }
+        return item; // Item total is already calculated
+      }
+      // --- END NEW BLOCK ---
+      const channelsOrAnglesCount = bays.length + 1;
+      const totalPlatesInRow = shelvesPerRack * qty;
+
+      let itemTotal = 0;
+
+      // === SLOTTED ANGLE LOGIC ===
+      if (type === "slotted") {
+        const angles = channelsOrAnglesCount * 2 * qty;
+        const boltsPerAngle = shelvesPerRack >= 2 ? 2 * shelvesPerRack + 4 : 8;
+        const bolts = angles * boltsPerAngle;
+        const corners = angles * 2;
+        const bushes = angles;
+
+        sBolts += bolts;
+        sCorners += corners;
+        sBushes += bushes;
+
+        const aPrice =
+          MOCK_PRICING.slotted.angles[d.height]?.[d.angleGauge] || 0;
+        const aLabel = `${d.height}ft Angle (${d.angleGauge}G)`;
+        if (!sAnglesGrp[aLabel]) sAnglesGrp[aLabel] = { qty: 0, price: aPrice };
+        sAnglesGrp[aLabel].qty += angles;
+
+        let itemPlatesCost = 0;
+        bays.forEach((bayLength) => {
+          const pPrice =
+            MOCK_PRICING.slotted.plates[`${bayLength}-${d.breadth}`]?.[
+              d.plateGauge
+            ] || 0;
+          const pLabel = `${bayLength}'x${d.breadth}" Plate (${d.plateGauge}G)`;
+          if (!sPlatesGrp[pLabel])
+            sPlatesGrp[pLabel] = { qty: 0, price: pPrice };
+          sPlatesGrp[pLabel].qty += totalPlatesInRow;
+          itemPlatesCost += totalPlatesInRow * pPrice;
+          totalSlottedPlates += totalPlatesInRow;
+        });
+
+        itemTotal =
+          angles * aPrice +
+          itemPlatesCost +
+          bolts * MOCK_PRICING.slotted.hardware.bolt +
+          corners * MOCK_PRICING.slotted.hardware.corner +
+          bushes * MOCK_PRICING.slotted.hardware.bush;
+      }
+
+      // === WALL MOUNTED LOGIC ===
+      else {
+        const channels = channelsOrAnglesCount * qty;
+        totalWallChannels += channels;
+
+        // Channels
+        const cPrice = MOCK_PRICING.wall.channels[d.height] || 0;
+        const cLabel = `${d.height}ft Channel`;
+        if (!wChannelsGrp[cLabel])
+          wChannelsGrp[cLabel] = { qty: 0, price: cPrice };
+        wChannelsGrp[cLabel].qty += channels;
+
+        // Screws (5 for 4ft, 7 for 6ft)
+        const screwsPerCh = d.height === "4" ? 5 : 7;
+        const screws = channels * screwsPerCh;
+        wScrews += screws;
+
+        // Brackets
+        const midChannels = Math.max(0, bays.length - 1);
+        // Double middle brackets if stopper is ON
+        const bracketsPerShelf =
+          channelsOrAnglesCount + (d.hasStopper ? midChannels : 0);
+        const brackets = bracketsPerShelf * shelvesPerRack * qty;
+        const bracketSize = WALL_BRACKET_MAP[d.breadth];
+        const bPrice = MOCK_PRICING.wall.brackets[bracketSize] || 0;
+        const bLabel = `${bracketSize}" Bracket`;
+        if (!wBracketsGrp[bLabel])
+          wBracketsGrp[bLabel] = { qty: 0, price: bPrice };
+        wBracketsGrp[bLabel].qty += brackets;
+
+        let itemPlatesCost = 0;
+        let itemStoppersCost = 0;
+
+        bays.forEach((bayLength) => {
+          // Plates
+          const pPrice =
+            MOCK_PRICING.wall.plates[`${bayLength}-${d.breadth}`] || 0;
+          const pLabel = `${bayLength}"x${d.breadth}" Plate`;
+          if (!wPlatesGrp[pLabel])
+            wPlatesGrp[pLabel] = { qty: 0, price: pPrice };
+          wPlatesGrp[pLabel].qty += totalPlatesInRow;
+          itemPlatesCost += totalPlatesInRow * pPrice;
+
+          // Stoppers
+          if (d.hasStopper) {
+            const stopperSize = WALL_STOPPER_MAP[bayLength];
+            const stPrice = MOCK_PRICING.wall.stoppers[stopperSize] || 0;
+            const stLabel = `${stopperSize}ft Stopper`;
+            if (!wStoppersGrp[stLabel])
+              wStoppersGrp[stLabel] = { qty: 0, price: stPrice };
+            wStoppersGrp[stLabel].qty += totalPlatesInRow; // 1 per plate
+            itemStoppersCost += totalPlatesInRow * stPrice;
+          }
+        });
+
+        itemTotal =
+          channels * cPrice +
+          itemPlatesCost +
+          itemStoppersCost +
+          brackets * bPrice +
+          screws * MOCK_PRICING.wall.hardware.screw;
+      }
+
+      return { ...item, itemTotal };
+    });
+
+    // Helper to map grouped items with overrides
+    const mapOverrides = (group) =>
+      Object.entries(group).map(([label, data]) => {
+        const finalQty =
+          overrides[label] !== undefined ? overrides[label] : data.qty;
+        return {
+          label,
+          baseQty: data.qty,
+          qty: finalQty || 0,
+          unitPrice: data.price,
+          total: (finalQty || 0) * data.price,
+        };
+      });
+
+    // Detailed Lists
+    const dSlottedPlates = mapOverrides(sPlatesGrp);
+    const dSlottedAngles = mapOverrides(sAnglesGrp);
+    const dWallPlates = mapOverrides(wPlatesGrp);
+    const dWallChannels = mapOverrides(wChannelsGrp);
+    const dWallBrackets = mapOverrides(wBracketsGrp);
+    const dWallStoppers = mapOverrides(wStoppersGrp);
+
+    const fBolts =
+      overrides.bolts !== undefined ? overrides.bolts || 0 : sBolts;
+    const fCorners =
+      overrides.corners !== undefined ? overrides.corners || 0 : sCorners;
+    const fBushes =
+      overrides.bushes !== undefined ? overrides.bushes || 0 : sBushes;
+    const fScrews =
+      overrides.screws !== undefined ? overrides.screws || 0 : wScrews;
+
+    // Material Costs
+    const sumTotal = (arr) => arr.reduce((sum, item) => sum + item.total, 0);
+    const materialCost =
+      sumTotal(dSlottedPlates) +
+      sumTotal(dSlottedAngles) +
+      sumTotal(dWallPlates) +
+      sumTotal(dWallChannels) +
+      sumTotal(dWallBrackets) +
+      sumTotal(dWallStoppers) +
+      fBolts * MOCK_PRICING.slotted.hardware.bolt +
+      fCorners * MOCK_PRICING.slotted.hardware.corner +
+      fBushes * MOCK_PRICING.slotted.hardware.bush +
+      fScrews * MOCK_PRICING.wall.hardware.screw;
+
+    // Fitting & Rent
+    const activeSRate = parseInt(slottedFittingRate) || 0;
+    const activeWRate = parseInt(wallFittingRate) || 0;
+    const activeRent = parseInt(rickshawRent) || 0;
+
+    const sFittingCost = isFittingOpted ? totalSlottedPlates * activeSRate : 0;
+    const wFittingCost = isFittingOpted ? totalWallChannels * activeWRate : 0;
+
+    const grandTotal = materialCost + sFittingCost + wFittingCost + activeRent;
+    const hasOverrides = Object.keys(overrides).length > 0;
+
+    return {
+      slotted: {
+        plates: dSlottedPlates,
+        angles: dSlottedAngles,
+        bolts: fBolts,
+        corners: fCorners,
+        bushes: fBushes,
+        hasItems: dSlottedPlates.length > 0,
+      },
+      wall: {
+        plates: dWallPlates,
+        channels: dWallChannels,
+        brackets: dWallBrackets,
+        stoppers: dWallStoppers,
+        screws: fScrews,
+        hasItems: dWallPlates.length > 0,
+      },
+      charges: {
+        sFittingCost,
+        sFittingRate: activeSRate,
+        totalSlottedPlates,
+        wFittingCost,
+        wFittingRate: activeWRate,
+        totalWallChannels,
+        rentCost: activeRent,
+      },
+      grandTotal,
+      hasOverrides,
+      enrichedCart,
+    };
+  }, [
+    cart,
+    overrides,
+    slottedFittingRate,
+    wallFittingRate,
+    rickshawRent,
+    isFittingOpted,
+  ]);
+
+  // UI Helpers
+  const isSlotted = activeTab === "slotted";
+  const currLength = isSlotted ? slottedDims.length : wallDims.length;
+
+  return (
+    <div className="max-w-7xl mx-auto p-4 md:p-6 bg-gray-50 min-h-screen">
+      {/* Header & Tabs */}
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-2 mb-6">
+          <LayoutGrid className="text-blue-600" /> VARUN ENTERPRISE
+        </h1>
+        <div className="flex bg-gray-200 p-1 rounded-xl w-fit border border-gray-300">
+          <button
+            onClick={() => setActiveTab("slotted")}
+            className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all ${isSlotted ? "bg-white text-blue-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+          >
+            Slotted Angle Rack
+          </button>
+          <button
+            onClick={() => setActiveTab("wall")}
+            className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all ${!isSlotted ? "bg-white text-indigo-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+          >
+            Wall Mounted Rack
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-8">
+        {/* LEFT COLUMN: Builder */}
+        <div className="xl:col-span-7 space-y-8">
+          {/* DIMENSIONS CARD */}
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 border-t-4 border-t-blue-500">
+            <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+              <Ruler className="text-gray-500 w-5 h-5" />
+              Select Rack Dimension
+            </h2>
+
+            {isSlotted ? (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Plate Breadth
+                  </label>
+                  <select
+                    name="breadth"
+                    value={slottedDims.breadth}
+                    onChange={(e) => handleDimChange(e, "slotted")}
+                    className="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500"
+                  >
+                    <option value="12">12" (1 ft)</option>
+                    <option value="15">15" (1.25 ft)</option>
+                    <option value="18">18" (1.5 ft)</option>
+                    <option value="24">24" (2 ft)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Plate Gauge
+                  </label>
+                  <select
+                    name="plateGauge"
+                    value={slottedDims.plateGauge}
+                    onChange={(e) => handleDimChange(e, "slotted")}
+                    className="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500"
+                  >
+                    <option value={22}>22G (Std)</option>
+                    <option value={20}>20G (Heavy)</option>
+                    <option value={18}>18G (Extra)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Angle Height
+                  </label>
+                  <select
+                    name="height"
+                    value={slottedDims.height}
+                    onChange={(e) => handleDimChange(e, "slotted")}
+                    className="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500"
+                  >
+                    <option value="3">3 ft</option>
+                    <option value="4">4 ft</option>
+                    <option value="5">5 ft</option>
+                    <option value="6">6 ft</option>
+                    <option value="6.5">6.5 ft</option>
+                    <option value="7">7 ft</option>
+                    <option value="8">8 ft</option>
+                    <option value="10">10 ft</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Angle Gauge
+                  </label>
+                  <select
+                    name="angleGauge"
+                    value={slottedDims.angleGauge}
+                    onChange={(e) => handleDimChange(e, "slotted")}
+                    className="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500"
+                  >
+                    <option value={16}>16G (Std)</option>
+                    <option value={14}>14G (Heavy)</option>
+                  </select>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 animate-in fade-in">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Plate Breadth
+                  </label>
+                  <select
+                    name="breadth"
+                    value={wallDims.breadth}
+                    onChange={(e) => handleDimChange(e, "wall")}
+                    className="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-indigo-500"
+                  >
+                    <option value="6.25">6.25"</option>
+                    <option value="9.25">9.25"</option>
+                    <option value="12.25">12.25"</option>
+                    <option value="14.25">14.25"</option>
+                    <option value="16.25">16.25"</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Channel Height
+                  </label>
+                  <select
+                    name="height"
+                    value={wallDims.height}
+                    onChange={(e) => handleDimChange(e, "wall")}
+                    className="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-indigo-500"
+                  >
+                    <option value="4">4 ft</option>
+                    <option value="6">6 ft</option>
+                  </select>
+                </div>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 cursor-pointer bg-indigo-50 px-4 py-2 rounded-lg border border-indigo-100 hover:bg-indigo-100 w-full">
+                    <input
+                      type="checkbox"
+                      name="hasStopper"
+                      checked={wallDims.hasStopper}
+                      onChange={(e) => handleDimChange(e, "wall")}
+                      className="w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
+                    />
+                    <span className="text-sm font-bold text-indigo-800">
+                      Add Front Stoppers
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* BUILDER CARD */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="bg-gray-100 p-4 border-b border-gray-200 flex gap-4">
+              <button
+                onClick={() => setBuildMode("standard")}
+                className={`px-4 py-2 rounded-lg font-bold transition-colors ${buildMode === "standard" ? (isSlotted ? "bg-blue-600 text-white" : "bg-indigo-600 text-white") : "text-gray-600 hover:bg-gray-200"}`}
+              >
+                Standard Rack
+              </button>
+              <button
+                onClick={() => setBuildMode("mixed")}
+                className={`px-4 py-2 rounded-lg font-bold transition-colors ${buildMode === "mixed" ? (isSlotted ? "bg-blue-600 text-white" : "bg-indigo-600 text-white") : "text-gray-600 hover:bg-gray-200"}`}
+              >
+                Mixed Rack
+              </button>
+              <button
+                onClick={() => setBuildMode("custom")}
+                className={`px-4 py-2 rounded-lg font-bold transition-colors ${buildMode === "custom" ? (isSlotted ? "bg-blue-600 text-white" : "bg-indigo-600 text-white") : "text-gray-600 hover:bg-gray-200"}`}
+              >
+                Custom Parts
+              </button>
+            </div>
+
+            <div className="p-6">
+              {buildMode === "standard" ? (
+                <div className="animate-in fade-in slide-in-from-bottom-2">
+                  <div className="flex items-center gap-4 mb-4">
+                    <label className="font-medium text-gray-700 text-sm whitespace-nowrap">
+                      Plate Length:
+                    </label>
+                    <select
+                      value={isSlotted ? slottedDims.length : wallDims.length}
+                      onChange={(e) =>
+                        handleDimChange(e, isSlotted ? "slotted" : "wall")
+                      }
+                      name="length"
+                      className={`border-gray-300 rounded-md shadow-sm p-2 border ${isSlotted ? "focus:ring-blue-500" : "focus:ring-indigo-500"}`}
+                    >
+                      {isSlotted ? (
+                        <>
+                          <option value="2">2 ft (24")</option>
+                          <option value="3">3 ft (36")</option>
+                          <option value="4">4 ft (48")</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="35.5">35.5" (~3 ft)</option>
+                          <option value="47.5">47.5" (~4 ft)</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+
+                  <div className="flex pb-4 mb-4">
+                    <div
+                      ref={scrollContainerRef}
+                      className="max-h-[350px] overflow-auto border border-gray-100 rounded-lg shadow-inner bg-gray-50 p-4 w-full"
+                    >
+                      <div
+                        className="grid gap-1 min-w-max"
+                        style={{
+                          gridTemplateColumns: `repeat(${MAX_RACKS}, minmax(0, 1fr))`,
+                        }}
+                        onMouseLeave={() => setHoveredCell({ x: 0, y: 0 })}
+                      >
+                        {Array.from({ length: MAX_SHELVES }).map(
+                          (_, rowIndex) => {
+                            const y = MAX_SHELVES - rowIndex;
+                            return Array.from({ length: MAX_RACKS }).map(
+                              (_, colIndex) => {
+                                const x = colIndex + 1;
+                                const isSelected =
+                                  x <= selectedCell.x && y <= selectedCell.y;
+                                const isHovered =
+                                  x <= hoveredCell.x && y <= hoveredCell.y;
+                                const activeColor = isSlotted
+                                  ? "bg-blue-600 border-blue-700"
+                                  : "bg-indigo-600 border-indigo-700";
+                                const hoverColor = isSlotted
+                                  ? "bg-blue-200 border-blue-400"
+                                  : "bg-indigo-200 border-indigo-400";
+                                return (
+                                  <div
+                                    key={`${x}-${y}`}
+                                    className={`w-6 h-6 md:w-8 md:h-8 border rounded cursor-pointer transition-colors duration-150 flex-shrink-0 ${isSelected ? activeColor : isHovered ? hoverColor : "bg-white border-gray-300"}`}
+                                    onMouseEnter={() =>
+                                      setHoveredCell({ x, y })
+                                    }
+                                    onClick={() => handleGridClick(x, y)}
+                                    title={`Racks: ${x}, Shelves: ${y}`}
+                                  />
+                                );
+                              },
+                            );
+                          },
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row justify-between items-center pt-4 border-t border-gray-100 gap-4">
+                    <div className="flex gap-4">
+                      <div className="flex items-center gap-2">
+                        <label className="font-medium text-gray-700 text-sm">
+                          Joined Racks:
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          max={MAX_RACKS}
+                          value={selectedCell.x}
+                          onChange={(e) =>
+                            handleStructureInputChange("x", e.target.value)
+                          }
+                          className={`w-16 border border-gray-300 rounded p-1.5 text-center font-bold outline-none focus:ring-1 ${isSlotted ? "text-blue-600 focus:ring-blue-500" : "text-indigo-600 focus:ring-indigo-500"}`}
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="font-medium text-gray-700 text-sm">
+                          Shelves/Rack:
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          max={MAX_SHELVES}
+                          value={selectedCell.y}
+                          onChange={(e) =>
+                            handleStructureInputChange("y", e.target.value)
+                          }
+                          className={`w-16 border border-gray-300 rounded p-1.5 text-center font-bold outline-none focus:ring-1 ${isSlotted ? "text-blue-600 focus:ring-blue-500" : "text-indigo-600 focus:ring-indigo-500"}`}
+                        />
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleAddToCart}
+                      disabled={selectedCell.x === 0 || selectedCell.y === 0}
+                      className={`w-full sm:w-auto disabled:bg-gray-300 text-white font-bold py-2.5 px-6 rounded-lg transition-colors flex items-center justify-center gap-2 ${isSlotted ? "bg-blue-600 hover:bg-blue-700" : "bg-indigo-600 hover:bg-indigo-700"}`}
+                    >
+                      <PackagePlus className="w-5 h-5" /> Add to Quote
+                    </button>
+                  </div>
+                </div>
+              ) : buildMode === "mixed" ? (
+                <div className="animate-in fade-in slide-in-from-bottom-2 space-y-6">
+                  <div className="flex items-center gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200">
+                    <label className="font-bold text-gray-700">
+                      Shelves per Rack:
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max={MAX_SHELVES}
+                      value={mixedShelves}
+                      onChange={(e) =>
+                        setMixedShelves(
+                          e.target.value === "" ? "" : parseInt(e.target.value),
+                        )
+                      }
+                      className={`w-20 border border-gray-300 rounded p-2 text-center font-bold outline-none ${isSlotted ? "text-blue-600" : "text-indigo-600"}`}
+                    />
+                  </div>
+
+                  <div>
+                    {/* --- HEADER WITH UNDO BUTTON --- */}
+                    <div className="flex justify-between items-center mb-3">
+                      <label className="font-bold text-gray-700">
+                        Append Racks to Row:
+                      </label>
+                      <button
+                        onClick={() =>
+                          setMixedBays((prev) => prev.slice(0, -1))
+                        }
+                        disabled={mixedBays.length === 0}
+                        className="bg-gray-100 disabled:opacity-50 hover:bg-red-100 hover:text-red-600 text-gray-600 font-bold py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 text-sm"
+                      >
+                        <Undo2 className="w-4 h-4" /> Undo Last
+                      </button>
+                    </div>
+
+                    {/* --- ADD RACK BUTTONS (Now with flex-wrap) --- */}
+                    <div className="flex flex-wrap gap-3">
+                      {isSlotted ? (
+                        <>
+                          <button
+                            onClick={() => setMixedBays([...mixedBays, 2])}
+                            className="bg-white border-2 border-blue-200 hover:border-blue-500 hover:bg-blue-50 text-blue-700 font-bold py-3 px-2 rounded-lg transition-colors shadow-sm flex items-center gap-2 flex-1 sm:flex-none justify-center"
+                          >
+                            <Plus className="w-5 h-5" /> 2 ft Rack
+                          </button>
+                          <button
+                            onClick={() => setMixedBays([...mixedBays, 3])}
+                            className="bg-white border-2 border-blue-200 hover:border-blue-500 hover:bg-blue-50 text-blue-700 font-bold py-3 px-2 rounded-lg transition-colors shadow-sm flex items-center gap-2 flex-1 sm:flex-none justify-center"
+                          >
+                            <Plus className="w-5 h-5" /> 3 ft Rack
+                          </button>
+                          <button
+                            onClick={() => setMixedBays([...mixedBays, 4])}
+                            className="bg-white border-2 border-blue-200 hover:border-blue-500 hover:bg-blue-50 text-blue-700 font-bold py-3 px-2 rounded-lg transition-colors shadow-sm flex items-center gap-2 flex-1 sm:flex-none justify-center"
+                          >
+                            <Plus className="w-5 h-5" /> 4 ft Rack
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => setMixedBays([...mixedBays, 35.5])}
+                            className="bg-white border-2 border-indigo-200 hover:border-indigo-500 hover:bg-indigo-50 text-indigo-700 font-bold py-3 px-6 rounded-lg transition-colors shadow-sm flex items-center gap-2 flex-1 sm:flex-none justify-center"
+                          >
+                            <Plus className="w-5 h-5" /> 35.5" Rack
+                          </button>
+                          <button
+                            onClick={() => setMixedBays([...mixedBays, 47.5])}
+                            className="bg-white border-2 border-indigo-200 hover:border-indigo-500 hover:bg-indigo-50 text-indigo-700 font-bold py-3 px-6 rounded-lg transition-colors shadow-sm flex items-center gap-2 flex-1 sm:flex-none justify-center"
+                          >
+                            <Plus className="w-5 h-5" /> 47.5" Rack
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900 rounded-xl p-6 shadow-inner text-white overflow-x-auto min-h-[140px] flex flex-col justify-center">
+                    {mixedBays.length === 0 ? (
+                      <p className="text-slate-500 text-center italic">
+                        Your row is empty. Add racks above to start building.
+                      </p>
+                    ) : (
+                      <div>
+                        <div className="flex items-stretch min-w-max">
+                          <div
+                            className="w-2 bg-slate-400 rounded-full flex-shrink-0"
+                            title="Upright"
+                          ></div>
+                          {mixedBays.map((bay, idx) => (
+                            <React.Fragment key={idx}>
+                              <div className="flex flex-col items-center justify-center px-4 md:px-8 border-y-2 border-slate-700 flex-grow text-slate-300 font-mono font-bold">
+                                {isSlotted ? `${bay} ft` : `${bay}"`}
+                              </div>
+                              <div
+                                className="w-2 bg-slate-400 rounded-full flex-shrink-0"
+                                title="Shared Upright"
+                              ></div>
+                            </React.Fragment>
+                          ))}
+                        </div>
+                        <p
+                          className={`text-center mt-4 font-bold tracking-widest ${isSlotted ? "text-emerald-400" : "text-indigo-400"}`}
+                        >
+                          TOTAL SPAN:{" "}
+                          {isSlotted
+                            ? `${mixedBays.reduce((a, b) => a + b, 0)} ft`
+                            : `${Math.round(mixedBays.reduce((a, b) => a + b / 12, 0))} ft`}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex justify-end pt-4 border-t border-gray-100">
+                    <button
+                      onClick={handleAddToCart}
+                      disabled={mixedBays.length === 0}
+                      className={`w-full sm:w-auto disabled:bg-gray-300 text-white font-bold py-3 px-8 rounded-lg transition-colors flex items-center justify-center gap-2 ${isSlotted ? "bg-blue-600 hover:bg-blue-700" : "bg-indigo-600 hover:bg-indigo-700"}`}
+                    >
+                      <PackagePlus className="w-5 h-5" /> Add Rack to Quote
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="animate-in fade-in slide-in-from-bottom-2 space-y-6 p-2">
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200">
+                    {/* 1. PART TYPE SELECTOR */}
+                    <div className="col-span-2 md:col-span-1">
+                      <label className="font-medium text-gray-700 text-sm mb-1 block">
+                        Part Type:
+                      </label>
+                      <select
+                        value={customItem.category}
+                        onChange={(e) =>
+                          setCustomItem({
+                            ...customItem,
+                            category: e.target.value,
+                          })
+                        }
+                        className={`w-full border-gray-300 rounded-md shadow-sm p-2 border ${isSlotted ? "focus:ring-blue-500" : "focus:ring-indigo-500"}`}
+                      >
+                        {isSlotted ? (
+                          <>
+                            <option value="plates">Plates</option>
+                            <option value="angles">Angles</option>
+                            <option value="bolts">Nut/Bolts</option>
+                            <option value="corners">Corner Supports</option>
+                            <option value="bushes">Rubber Bushes</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="plates">Plates</option>
+                            <option value="channels">Channels</option>
+                            <option value="brackets">Brackets</option>
+                            <option value="stoppers">Stoppers</option>
+                            <option value="screws">Screws</option>
+                          </>
+                        )}
+                      </select>
+                    </div>
+
+                    {/* 2. LENGTH (For Plates & Stoppers) */}
+                    {(customItem.category === "plates" ||
+                      customItem.category === "stoppers") && (
+                      <div>
+                        <label className="font-medium text-gray-700 text-sm mb-1 block">
+                          Length:
+                        </label>
+                        <select
+                          value={
+                            isSlotted ? slottedDims.length : wallDims.length
+                          }
+                          onChange={(e) =>
+                            handleDimChange(e, isSlotted ? "slotted" : "wall")
+                          }
+                          name="length"
+                          className={`w-full border-gray-300 rounded-md shadow-sm p-2 border ${isSlotted ? "focus:ring-blue-500" : "focus:ring-indigo-500"}`}
+                        >
+                          {isSlotted ? (
+                            <>
+                              <option value="2">2 ft (24")</option>
+                              <option value="3">3 ft (36")</option>
+                              <option value="4">4 ft (48")</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="35.5">35.5" (~3 ft)</option>
+                              <option value="47.5">47.5" (~4 ft)</option>
+                            </>
+                          )}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* 3. BREADTH/DEPTH (For Plates & Brackets) */}
+                    {(customItem.category === "plates" ||
+                      customItem.category === "brackets") && (
+                      <div>
+                        <label className="font-medium text-gray-700 text-sm mb-1 block">
+                          Depth/Breadth:
+                        </label>
+                        <select
+                          value={
+                            isSlotted ? slottedDims.breadth : wallDims.breadth
+                          }
+                          onChange={(e) =>
+                            handleDimChange(e, isSlotted ? "slotted" : "wall")
+                          }
+                          name="breadth"
+                          className={`w-full border-gray-300 rounded-md shadow-sm p-2 border ${isSlotted ? "focus:ring-blue-500" : "focus:ring-indigo-500"}`}
+                        >
+                          {isSlotted ? (
+                            <>
+                              <option value="12">12" (1 ft)</option>
+                              <option value="15">15" (1.25 ft)</option>
+                              <option value="18">18" (1.5 ft)</option>
+                              <option value="24">24" (2 ft)</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="6.25">6.25"</option>
+                              <option value="9.25">9.25"</option>
+                              <option value="12.25">12.25"</option>
+                              <option value="14.25">14.25"</option>
+                              <option value="16.25">16.25"</option>
+                            </>
+                          )}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* 4. PLATE GAUGE (Slotted Plates Only) */}
+                    {isSlotted && customItem.category === "plates" && (
+                      <div>
+                        <label className="font-medium text-gray-700 text-sm mb-1 block">
+                          Plate Gauge:
+                        </label>
+                        <select
+                          value={slottedDims.plateGauge}
+                          onChange={(e) => handleDimChange(e, "slotted")}
+                          name="plateGauge"
+                          className="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500"
+                        >
+                          <option value={22}>22G (Std)</option>
+                          <option value={20}>20G (Heavy)</option>
+                          <option value={18}>18G (Extra)</option>
+                        </select>
+                      </div>
+                    )}
+
+                    {/* 5. HEIGHT (For Angles & Channels) */}
+                    {(customItem.category === "angles" ||
+                      customItem.category === "channels") && (
+                      <div>
+                        <label className="font-medium text-gray-700 text-sm mb-1 block">
+                          Height:
+                        </label>
+                        <select
+                          value={
+                            isSlotted ? slottedDims.height : wallDims.height
+                          }
+                          onChange={(e) =>
+                            handleDimChange(e, isSlotted ? "slotted" : "wall")
+                          }
+                          name="height"
+                          className={`w-full border-gray-300 rounded-md shadow-sm p-2 border ${isSlotted ? "focus:ring-blue-500" : "focus:ring-indigo-500"}`}
+                        >
+                          {isSlotted ? (
+                            <>
+                              <option value="3">3 ft</option>
+                              <option value="4">4 ft</option>
+                              <option value="5">5 ft</option>
+                              <option value="6">6 ft</option>
+                              <option value="6.5">6.5 ft</option>
+                              <option value="7">7 ft</option>
+                              <option value="8">8 ft</option>
+                              <option value="10">10 ft</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="4">4 ft</option>
+                              <option value="6">6 ft</option>
+                            </>
+                          )}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* 6. ANGLE GAUGE (Slotted Angles Only) */}
+                    {isSlotted && customItem.category === "angles" && (
+                      <div>
+                        <label className="font-medium text-gray-700 text-sm mb-1 block">
+                          Angle Gauge:
+                        </label>
+                        <select
+                          value={slottedDims.angleGauge}
+                          onChange={(e) => handleDimChange(e, "slotted")}
+                          name="angleGauge"
+                          className="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500"
+                        >
+                          <option value={16}>16G (Std)</option>
+                          <option value={14}>14G (Heavy)</option>
+                        </select>
+                      </div>
+                    )}
+
+                    {/* 7. QUANTITY */}
+                    <div>
+                      <label className="font-medium text-gray-700 text-sm mb-1 block">
+                        Quantity:
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={customItem.qty}
+                        onChange={(e) =>
+                          setCustomItem({
+                            ...customItem,
+                            qty:
+                              e.target.value === ""
+                                ? ""
+                                : parseInt(e.target.value),
+                          })
+                        }
+                        className={`w-full border-gray-300 rounded-md shadow-sm p-2 border outline-none ${isSlotted ? "focus:ring-1 focus:ring-blue-500" : "focus:ring-1 focus:ring-indigo-500"}`}
+                      />
+                    </div>
+                  </div>
+
+                  {/* ADD BUTTON */}
+                  <div className="flex justify-end pt-4 border-t border-gray-100">
+                    <button
+                      onClick={handleAddCustomItem}
+                      className={`w-full sm:w-auto text-white font-bold py-3 px-8 rounded-lg transition-colors flex items-center justify-center gap-2 ${isSlotted ? "bg-blue-600 hover:bg-blue-700" : "bg-indigo-600 hover:bg-indigo-700"}`}
+                    >
+                      <PackagePlus className="w-5 h-5" /> Add Part to Quote
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT COLUMN: Summary & Quotation */}
+        <div className="xl:col-span-5 space-y-6">
+          {/* CART SUMMARY BLOCK */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="bg-gray-100 p-4 border-b border-gray-200 flex justify-between items-center">
+              <h2 className="font-bold text-gray-800 flex items-center gap-2">
+                <ShoppingCart className="w-5 h-5 text-gray-600" /> Cart
+                Configurations
+              </h2>
+              <span className="bg-gray-800 text-white text-xs font-bold px-2 py-1 rounded-full">
+                {cart.length}
+              </span>
+            </div>
+
+            <div className="p-4 max-h-[450px] overflow-y-auto">
+              {cart.length === 0 ? (
+                <div className="text-center py-8 text-gray-400 text-sm">
+                  Your cart is empty. Configure a rack on the left and click
+                  "Add to Quote".
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {quote?.enrichedCart.map((item) => {
+                    const isSlotted = item.type === "slotted";
+                    const wall = item.type === "wall";
+                    if (item.isCustomPart) {
+                      return (
+                        <div
+                          key={item.id}
+                          className="border border-gray-200 bg-white rounded-lg shadow-sm overflow-hidden transition-all"
+                        >
+                          <div className="flex justify-between items-center p-3">
+                            <div className="flex-1 pr-4">
+                              <p className="font-bold text-gray-800 text-sm flex items-center gap-1.5">
+                                <Wrench
+                                  className={`w-3.5 h-3.5 ${wall ? "text-indigo-500" : "text-blue-500"}`}
+                                />
+                                Custom Part
+                              </p>
+                              <p className="text-xs text-gray-600 mt-1 font-medium">
+                                {item.partLabel}
+                              </p>
+                              <p className="text-sm font-bold text-green-600 mt-1">
+                                ₹
+                                {item.itemTotal.toLocaleString("en-IN", {
+                                  maximumFractionDigits: 0,
+                                })}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-md p-1 shadow-sm">
+                                <button
+                                  onClick={() => updateCartQty(item.id, -1)}
+                                  className="p-1 hover:bg-white rounded text-gray-600 transition-colors"
+                                >
+                                  {item.qty === 1 ? (
+                                    <Trash2 className="w-4 h-4 text-red-500" />
+                                  ) : (
+                                    <Minus className="w-4 h-4" />
+                                  )}
+                                </button>
+                                <span className="w-5 text-center font-bold text-sm">
+                                  {item.qty}
+                                </span>
+                                <button
+                                  onClick={() => updateCartQty(item.id, 1)}
+                                  className="p-1 hover:bg-white rounded text-gray-600 transition-colors"
+                                >
+                                  <Plus className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
+                    const isMixed = new Set(item.bays).size > 1;
+
+                    // --- Text Formatting ---
+                    const rackName = isSlotted
+                      ? "Slotted Angle Rack"
+                      : "Wall Mounted Rack";
+                    const totalSpan = isSlotted
+                      ? `${item.bays.reduce((a, b) => a + b, 0)} ft`
+                      : `${Math.round(item.bays.reduce((a, b) => a + b / 12, 0))} ft (approx)`;
+
+                    const joinedLabel =
+                      item.bays.length > 1
+                        ? `${item.bays.length} Joined Racks`
+                        : `1 Standalone Rack`;
+                    const spanLabel = isMixed
+                      ? `Mixed Span (${item.bays.join("+")} ${wall ? '"' : "ft"})`
+                      : `${joinedLabel} (${item.bays[0]} ${wall ? '"' : "ft"})`;
+
+                    const isExpanded = expandedCartId === item.id;
+
+                    // --- Material Calculations (for this specific row) ---
+                    const totalAngles = (item.bays.length + 1) * item.qty * 2;
+                    const platesPerBay = item.shelvesPerRack * item.qty;
+
+                    // Group plates by size for this row
+                    const uniqueBays = {};
+                    item.bays.forEach((b) => {
+                      uniqueBays[b] = (uniqueBays[b] || 0) + platesPerBay;
+                    });
+
+                    return (
+                      <div
+                        key={item.id}
+                        className="border border-gray-200 bg-white rounded-lg shadow-sm overflow-hidden transition-all"
+                      >
+                        {/* COMPACT HEADER (Clickable) */}
+                        <div
+                          className="flex justify-between items-center p-3 cursor-pointer hover:bg-gray-50"
+                          onClick={() =>
+                            setExpandedCartId(isExpanded ? null : item.id)
+                          }
+                        >
+                          <div className="flex-1 pr-4">
+                            <p className="font-bold text-gray-800 text-sm flex items-center gap-1.5">
+                              <Layers
+                                className={`w-3.5 h-3.5 ${wall ? "text-indigo-500" : "text-blue-500"}`}
+                              />
+                              {rackName}
+                            </p>
+                            <p className="text-xs text-gray-600 mt-1 font-medium">
+                              {spanLabel} • {totalSpan} Span
+                            </p>
+                            <p className="text-xs text-gray-500 mt-0.5">
+                              {item.dimensions.breadth}" Depth •{" "}
+                              {item.dimensions.height}' High •{" "}
+                              {item.shelvesPerRack} Shelves/Rack
+                              {wall &&
+                                item.dimensions.hasStopper &&
+                                " • (W/ Stoppers)"}
+                            </p>
+                            <p className="text-sm font-bold text-green-600 mt-1">
+                              ₹
+                              {item.itemTotal.toLocaleString("en-IN", {
+                                maximumFractionDigits: 0,
+                              })}
+                            </p>
+                          </div>
+
+                          {/* Controls */}
+                          <div className="flex items-center gap-3">
+                            <div
+                              className="flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-md p-1 shadow-sm"
+                              onClick={(e) => e.stopPropagation()} // Prevents the card from expanding when clicking quantity
+                            >
+                              <button
+                                onClick={() => updateCartQty(item.id, -1)}
+                                className="p-1 hover:bg-white rounded text-gray-600 transition-colors"
+                              >
+                                {item.qty === 1 ? (
+                                  <Trash2 className="w-4 h-4 text-red-500" />
+                                ) : (
+                                  <Minus className="w-4 h-4" />
+                                )}
+                              </button>
+                              <span className="w-5 text-center font-bold text-sm">
+                                {item.qty}
+                              </span>
+                              <button
+                                onClick={() => updateCartQty(item.id, 1)}
+                                className="p-1 hover:bg-white rounded text-gray-600 transition-colors"
+                              >
+                                <Plus className="w-4 h-4" />
+                              </button>
+                            </div>
+                            {isExpanded ? (
+                              <ChevronUp className="w-5 h-5 text-gray-400" />
+                            ) : (
+                              <ChevronDown className="w-5 h-5 text-gray-400" />
+                            )}
+                          </div>
+                        </div>
+
+                        {/* EXPANDED MATERIAL BREAKDOWN */}
+                        {isExpanded && (
+                          <div className="bg-gray-50 p-3 border-t border-gray-100 text-xs text-gray-600">
+                            <h4 className="font-bold text-gray-700 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">
+                              Included Materials (for {item.qty}{" "}
+                              {item.qty > 1 ? "Units" : "Unit"})
+                            </h4>
+                            <ul className="space-y-1.5 font-mono">
+                              {/* Plates */}
+                              {Object.entries(uniqueBays).map(
+                                ([baySize, count]) => (
+                                  <li
+                                    key={baySize}
+                                    className="flex justify-between"
+                                  >
+                                    <span>
+                                      {baySize}
+                                      {isSlotted ? "'" : '"'} x{" "}
+                                      {item.dimensions.breadth}" Plates (
+                                      {item.dimensions.plateGauge}G)
+                                    </span>
+                                    <strong className="text-gray-800">
+                                      {count} pc
+                                    </strong>
+                                  </li>
+                                ),
+                              )}
+                              {/* Frames */}
+                              <li className="flex justify-between">
+                                <span>
+                                  {item.dimensions.height}ft{" "}
+                                  {isSlotted ? "Angles" : "Channels"} (
+                                  {item.dimensions.angleGauge}G)
+                                </span>
+                                <strong className="text-gray-800">
+                                  {totalAngles} pc
+                                </strong>
+                              </li>
+
+                              {/* Wall Specifics */}
+                              {wall && (
+                                <>
+                                  <li className="flex justify-between">
+                                    <span>
+                                      {
+                                        WALL_BRACKET_MAP[
+                                          item.dimensions.breadth
+                                        ]
+                                      }
+                                      " Brackets
+                                    </span>
+                                    <strong className="text-gray-800">
+                                      {(item.bays.length +
+                                        1 +
+                                        (item.dimensions.hasStopper
+                                          ? Math.max(0, item.bays.length - 1)
+                                          : 0)) *
+                                        item.shelvesPerRack *
+                                        item.qty}{" "}
+                                      pc
+                                    </strong>
+                                  </li>
+                                  {item.dimensions.hasStopper &&
+                                    Object.entries(uniqueBays).map(
+                                      ([baySize, count]) => (
+                                        <li
+                                          key={`stop-${baySize}`}
+                                          className="flex justify-between"
+                                        >
+                                          <span>
+                                            {WALL_STOPPER_MAP[baySize]}ft
+                                            Stoppers
+                                          </span>
+                                          <strong className="text-gray-800">
+                                            {count} pc
+                                          </strong>
+                                        </li>
+                                      ),
+                                    )}
+                                  <li className="flex justify-between">
+                                    <span>Screws</span>
+                                    <strong className="text-gray-800">
+                                      {totalAngles *
+                                        (item.dimensions.height === "4"
+                                          ? 5
+                                          : 7)}{" "}
+                                      pc
+                                    </strong>
+                                  </li>
+                                </>
+                              )}
+
+                              {/* Slotted Specifics */}
+                              {isSlotted && (
+                                <>
+                                  <li className="flex justify-between">
+                                    <span>Nut/Bolts</span>
+                                    <strong className="text-gray-800">
+                                      {totalAngles *
+                                        (item.shelvesPerRack >= 2
+                                          ? 2 * item.shelvesPerRack + 4
+                                          : 8)}{" "}
+                                      pc
+                                    </strong>
+                                  </li>
+                                  <li className="flex justify-between">
+                                    <span>Corner Supports</span>
+                                    <strong className="text-gray-800">
+                                      {totalAngles * 2} pc
+                                    </strong>
+                                  </li>
+                                  <li className="flex justify-between">
+                                    <span>Rubber Bushes</span>
+                                    <strong className="text-gray-800">
+                                      {totalAngles} pc
+                                    </strong>
+                                  </li>
+                                </>
+                              )}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* EDITABLE MATERIALS BLOCK */}
+          {quote && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="bg-gray-50 p-4 border-b border-gray-200 flex justify-between items-center">
+                <h2 className="font-bold text-gray-800 flex items-center gap-2">
+                  <ListChecks className="w-5 h-5 text-gray-600" /> Required
+                  Materials
+                </h2>
+                {quote.hasOverrides && (
+                  <button
+                    onClick={() => setOverrides({})}
+                    className="text-xs flex items-center gap-1 text-orange-600 hover:text-orange-500 font-medium bg-orange-100 px-2 py-1 rounded"
+                  >
+                    <RefreshCcw className="w-3 h-3" /> Reset Edits
+                  </button>
+                )}
+              </div>
+
+              <div className="p-4 space-y-6 max-h-[400px] overflow-y-auto">
+                {/* --- SLOTTED ANGLE EDITOR --- */}
+                {quote.slotted.hasItems && (
+                  <div className="border border-blue-100 rounded-lg p-3 bg-blue-50/30">
+                    <h3 className="text-xs font-bold text-blue-800 uppercase tracking-wider mb-3">
+                      Slotted Angle Parts
+                    </h3>
+                    <ul className="space-y-2 text-sm">
+                      {[...quote.slotted.plates, ...quote.slotted.angles].map(
+                        (item, idx) => (
+                          <li
+                            key={`es-${idx}`}
+                            className="flex justify-between items-center"
+                          >
+                            <span className="text-gray-700 text-xs truncate pr-2">
+                              {item.label}
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              value={item.qty}
+                              onChange={(e) =>
+                                handleOverrideChange(item.label, e.target.value)
+                              }
+                              className={`w-16 bg-white border rounded p-1 text-right focus:ring-1 focus:ring-blue-500 outline-none ${overrides[item.label] !== undefined ? "border-orange-400 text-orange-600 font-bold bg-orange-50" : "border-gray-300 text-gray-800"}`}
+                            />
+                          </li>
+                        ),
+                      )}
+                      <div className="border-t border-blue-100 my-2"></div>
+                      <li className="flex justify-between items-center">
+                        <span className="text-gray-700 text-xs">Nut/Bolts</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={quote.slotted.bolts}
+                          onChange={(e) =>
+                            handleOverrideChange("bolts", e.target.value)
+                          }
+                          className={`w-16 bg-white border rounded p-1 text-right focus:ring-1 outline-none ${overrides.bolts !== undefined ? "border-orange-400 text-orange-600 font-bold" : "border-gray-300 text-gray-800"}`}
+                        />
+                      </li>
+                      <li className="flex justify-between items-center">
+                        <span className="text-gray-700 text-xs">
+                          Corner Supports
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={quote.slotted.corners}
+                          onChange={(e) =>
+                            handleOverrideChange("corners", e.target.value)
+                          }
+                          className={`w-16 bg-white border rounded p-1 text-right focus:ring-1 outline-none ${overrides.corners !== undefined ? "border-orange-400 text-orange-600 font-bold" : "border-gray-300 text-gray-800"}`}
+                        />
+                      </li>
+                      <li className="flex justify-between items-center">
+                        <span className="text-gray-700 text-xs">
+                          Rubber Bushes
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={quote.slotted.bushes}
+                          onChange={(e) =>
+                            handleOverrideChange("bushes", e.target.value)
+                          }
+                          className={`w-16 bg-white border rounded p-1 text-right focus:ring-1 outline-none ${overrides.bushes !== undefined ? "border-orange-400 text-orange-600 font-bold" : "border-gray-300 text-gray-800"}`}
+                        />
+                      </li>
+                    </ul>
+                  </div>
+                )}
+
+                {/* --- WALL MOUNTED EDITOR --- */}
+                {quote.wall.hasItems && (
+                  <div className="border border-indigo-100 rounded-lg p-3 bg-indigo-50/30">
+                    <h3 className="text-xs font-bold text-indigo-800 uppercase tracking-wider mb-3">
+                      Wall Mounted Parts
+                    </h3>
+                    <ul className="space-y-2 text-sm">
+                      {[
+                        ...quote.wall.plates,
+                        ...quote.wall.channels,
+                        ...quote.wall.brackets,
+                        ...quote.wall.stoppers,
+                      ].map((item, idx) => (
+                        <li
+                          key={`ew-${idx}`}
+                          className="flex justify-between items-center"
+                        >
+                          <span className="text-gray-700 text-xs truncate pr-2">
+                            {item.label}
+                          </span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={item.qty}
+                            onChange={(e) =>
+                              handleOverrideChange(item.label, e.target.value)
+                            }
+                            className={`w-16 bg-white border rounded p-1 text-right focus:ring-1 focus:ring-indigo-500 outline-none ${overrides[item.label] !== undefined ? "border-orange-400 text-orange-600 font-bold bg-orange-50" : "border-gray-300 text-gray-800"}`}
+                          />
+                        </li>
+                      ))}
+                      <div className="border-t border-indigo-100 my-2"></div>
+                      <li className="flex justify-between items-center">
+                        <span className="text-gray-700 text-xs">Screws</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={quote.wall.screws}
+                          onChange={(e) =>
+                            handleOverrideChange("screws", e.target.value)
+                          }
+                          className={`w-16 bg-white border rounded p-1 text-right focus:ring-1 outline-none ${overrides.screws !== undefined ? "border-orange-400 text-orange-600 font-bold" : "border-gray-300 text-gray-800"}`}
+                        />
+                      </li>
+                    </ul>
+                  </div>
+                )}
+
+                {/* --- CHARGES EDITOR --- */}
+                <div className="pt-2 border-t border-gray-200">
+                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 flex items-center gap-1">
+                    <Truck className="w-3 h-3" /> Service & Logistics
+                  </h3>
+                  <ul className="space-y-3 text-sm">
+                    {/* NEW TOGGLE SWITCH */}
+                    <li className="flex justify-between items-center bg-gray-100 p-2 rounded-lg border border-gray-200">
+                      <span className="text-gray-700 font-bold text-xs">
+                        Fitting
+                      </span>
+                      <button
+                        onClick={() => setIsFittingOpted(!isFittingOpted)}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${isFittingOpted ? "bg-green-500" : "bg-gray-300"}`}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isFittingOpted ? "translate-x-6" : "translate-x-1"}`}
+                        />
+                      </button>
+                    </li>
+
+                    {/* ONLY SHOW RATES IF FITTING IS OPTED IN */}
+                    {isFittingOpted && quote.slotted.hasItems && (
+                      <li className="flex justify-between items-center pl-2 animate-in fade-in">
+                        <span className="text-gray-600 text-xs">
+                          Slotted Fitting (per plate)
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-gray-500 font-medium">₹</span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={slottedFittingRate}
+                            onChange={(e) =>
+                              setSlottedFittingRate(e.target.value)
+                            }
+                            className="w-16 bg-white border border-gray-300 rounded p-1 text-right focus:ring-1 focus:ring-blue-500 outline-none"
+                          />
+                        </div>
+                      </li>
+                    )}
+                    {isFittingOpted && quote.wall.hasItems && (
+                      <li className="flex justify-between items-center pl-2 animate-in fade-in">
+                        <span className="text-gray-600 text-xs">
+                          Wall Fitting (per channel)
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-gray-500 font-medium">₹</span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={wallFittingRate}
+                            onChange={(e) => setWallFittingRate(e.target.value)}
+                            className="w-16 bg-white border border-gray-300 rounded p-1 text-right focus:ring-1 focus:ring-indigo-500 outline-none"
+                          />
+                        </div>
+                      </li>
+                    )}
+
+                    <li className="flex justify-between items-center pt-2 border-t border-gray-100">
+                      <span className="text-gray-700 text-xs font-bold">
+                        Rickshaw Rent (Fixed)
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-gray-500 font-medium">₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="0"
+                          value={rickshawRent}
+                          onChange={(e) => setRickshawRent(e.target.value)}
+                          className="w-16 bg-white border border-gray-300 rounded p-1 text-right focus:ring-1 focus:ring-gray-500 outline-none placeholder-gray-300"
+                        />
+                      </div>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* --- FINAL QUOTATION SNAPSHOT TARGET --- */}
+          <div
+            ref={quoteRef}
+            className="bg-gray-900 text-white rounded-xl shadow-xl p-8 relative overflow-hidden border border-gray-800"
+          >
+            <div className="flex justify-between items-center mb-6 border-b border-gray-700 pb-6">
+              <div>
+                <h2 className="text-2xl font-bold flex items-center gap-2">
+                  VARUN Enterprise
+                </h2>
+                <p className="text-sm text-gray-400 mt-1">
+                  Material Estimate & Schematics
+                </p>
+              </div>
+              <LayoutGrid className="text-gray-500 w-8 h-8 opacity-50" />
+            </div>
+
+            {!quote ? (
+              <div className="text-gray-500 text-center py-6 text-sm">
+                Awaiting items...
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* SCHEMATICS */}
+                <h3 className="text-xs text-gray-400 font-semibold uppercase tracking-wider mb-3">
+                  Structural Schematics
+                </h3>
+                <div className="grid grid-cols-1 gap-4 mb-8">
+                  {quote.enrichedCart.map(
+                    (item, idx) =>
+                      !item.isCustomPart && (
+                        <div
+                          key={`schema-${idx}`}
+                          className="flex flex-col gap-2"
+                        >
+                          <RackSchematic item={item} />
+                          {item.qty > 1 && (
+                            <p className="text-center text-sm font-bold text-gray-400 mt-1">
+                              x {item.qty} Units
+                            </p>
+                          )}
+                        </div>
+                      ),
+                  )}
+                </div>
+
+                <h3 className="text-xs text-gray-400 font-semibold uppercase tracking-wider mb-3 border-t border-gray-700 pt-6">
+                  Itemized Specification
+                </h3>
+                <ul className="space-y-2 text-[14px] text-gray-200">
+                  {/* PRINT SLOTTED PARTS */}
+                  {quote.slotted.hasItems && (
+                    <>
+                      <li className="text-blue-400 text-xs font-bold uppercase mt-4 mb-1 border-b border-gray-700 pb-1">
+                        Slotted Angle Rack
+                      </li>
+                      {quote.slotted.plates
+                        .filter((i) => i.qty > 0)
+                        .map((item, idx) => (
+                          <li
+                            key={`qp-${idx}`}
+                            className="flex justify-between items-end border-b border-gray-800/50 pb-1"
+                          >
+                            <span className="pr-4">{item.label}</span>
+                            <span className="font-mono text-xs">
+                              <span className="text-gray-400">
+                                {item.qty}pc * ₹{item.unitPrice} ={" "}
+                              </span>
+                              <strong className="text-white inline-block w-16 text-right">
+                                ₹{item.total}
+                              </strong>
+                            </span>
+                          </li>
+                        ))}
+                      {quote.slotted.angles
+                        .filter((i) => i.qty > 0)
+                        .map((item, idx) => (
+                          <li
+                            key={`qa-${idx}`}
+                            className="flex justify-between items-end border-b border-gray-800/50 pb-1"
+                          >
+                            <span className="pr-4">{item.label}</span>
+                            <span className="font-mono text-xs">
+                              <span className="text-gray-400">
+                                {item.qty}pc * ₹{item.unitPrice} ={" "}
+                              </span>
+                              <strong className="text-white inline-block w-16 text-right">
+                                ₹{item.total}
+                              </strong>
+                            </span>
+                          </li>
+                        ))}
+                      {quote.slotted.bolts > 0 && (
+                        <li className="flex justify-between items-end border-b border-gray-800/50 pb-1">
+                          <span className="pr-4">Nut/Bolts</span>
+                          <span className="font-mono text-xs">
+                            <span className="text-gray-400">
+                              {quote.slotted.bolts}pc * ₹
+                              {MOCK_PRICING.slotted.hardware.bolt} ={" "}
+                            </span>
+                            <strong className="text-white inline-block w-16 text-right">
+                              ₹
+                              {quote.slotted.bolts *
+                                MOCK_PRICING.slotted.hardware.bolt}
+                            </strong>
+                          </span>
+                        </li>
+                      )}
+                      {quote.slotted.corners > 0 && (
+                        <li className="flex justify-between items-end border-b border-gray-800/50 pb-1">
+                          <span className="pr-4">Corner Supports</span>
+                          <span className="font-mono text-xs">
+                            <span className="text-gray-400">
+                              {quote.slotted.corners}pc * ₹
+                              {MOCK_PRICING.slotted.hardware.corner} ={" "}
+                            </span>
+                            <strong className="text-white inline-block w-16 text-right">
+                              ₹
+                              {quote.slotted.corners *
+                                MOCK_PRICING.slotted.hardware.corner}
+                            </strong>
+                          </span>
+                        </li>
+                      )}
+                      {quote.slotted.bushes > 0 && (
+                        <li className="flex justify-between items-end border-b border-gray-800/50 pb-1">
+                          <span className="pr-4">Rubber Bushes</span>
+                          <span className="font-mono text-xs">
+                            <span className="text-gray-400">
+                              {quote.slotted.bushes}pc * ₹
+                              {MOCK_PRICING.slotted.hardware.bush} ={" "}
+                            </span>
+                            <strong className="text-white inline-block w-16 text-right">
+                              ₹
+                              {quote.slotted.bushes *
+                                MOCK_PRICING.slotted.hardware.bush}
+                            </strong>
+                          </span>
+                        </li>
+                      )}
+                    </>
+                  )}
+
+                  {/* PRINT WALL MOUNTED PARTS */}
+                  {quote.wall.hasItems && (
+                    <>
+                      <li className="text-indigo-400 text-xs font-bold uppercase mt-4 mb-1 border-b border-gray-700 pb-1">
+                        Wall Mounted Rack
+                      </li>
+                      {quote.wall.plates
+                        .filter((i) => i.qty > 0)
+                        .map((item, idx) => (
+                          <li
+                            key={`wp-${idx}`}
+                            className="flex justify-between items-end border-b border-gray-800/50 pb-1"
+                          >
+                            <span className="pr-4">{item.label}</span>
+                            <span className="font-mono text-xs">
+                              <span className="text-gray-400">
+                                {item.qty}pc * ₹{item.unitPrice} ={" "}
+                              </span>
+                              <strong className="text-white inline-block w-16 text-right">
+                                ₹{item.total}
+                              </strong>
+                            </span>
+                          </li>
+                        ))}
+                      {quote.wall.channels
+                        .filter((i) => i.qty > 0)
+                        .map((item, idx) => (
+                          <li
+                            key={`wc-${idx}`}
+                            className="flex justify-between items-end border-b border-gray-800/50 pb-1"
+                          >
+                            <span className="pr-4">{item.label}</span>
+                            <span className="font-mono text-xs">
+                              <span className="text-gray-400">
+                                {item.qty}pc * ₹{item.unitPrice} ={" "}
+                              </span>
+                              <strong className="text-white inline-block w-16 text-right">
+                                ₹{item.total}
+                              </strong>
+                            </span>
+                          </li>
+                        ))}
+                      {quote.wall.brackets
+                        .filter((i) => i.qty > 0)
+                        .map((item, idx) => (
+                          <li
+                            key={`wb-${idx}`}
+                            className="flex justify-between items-end border-b border-gray-800/50 pb-1"
+                          >
+                            <span className="pr-4">{item.label}</span>
+                            <span className="font-mono text-xs">
+                              <span className="text-gray-400">
+                                {item.qty}pc * ₹{item.unitPrice} ={" "}
+                              </span>
+                              <strong className="text-white inline-block w-16 text-right">
+                                ₹{item.total}
+                              </strong>
+                            </span>
+                          </li>
+                        ))}
+                      {quote.wall.stoppers
+                        .filter((i) => i.qty > 0)
+                        .map((item, idx) => (
+                          <li
+                            key={`ws-${idx}`}
+                            className="flex justify-between items-end border-b border-gray-800/50 pb-1"
+                          >
+                            <span className="pr-4">{item.label}</span>
+                            <span className="font-mono text-xs">
+                              <span className="text-gray-400">
+                                {item.qty}pc * ₹{item.unitPrice} ={" "}
+                              </span>
+                              <strong className="text-white inline-block w-16 text-right">
+                                ₹{item.total}
+                              </strong>
+                            </span>
+                          </li>
+                        ))}
+                      {quote.wall.screws > 0 && (
+                        <li className="flex justify-between items-end border-b border-gray-800/50 pb-1">
+                          <span className="pr-4">Screws</span>
+                          <span className="font-mono text-xs">
+                            <span className="text-gray-400">
+                              {quote.wall.screws}pc * ₹
+                              {MOCK_PRICING.wall.hardware.screw} ={" "}
+                            </span>
+                            <strong className="text-white inline-block w-16 text-right">
+                              ₹
+                              {quote.wall.screws *
+                                MOCK_PRICING.wall.hardware.screw}
+                            </strong>
+                          </span>
+                        </li>
+                      )}
+                    </>
+                  )}
+
+                  {/* PRINT CHARGES */}
+                  {(quote.charges.sFittingCost > 0 ||
+                    quote.charges.wFittingCost > 0 ||
+                    quote.charges.rentCost > 0) && (
+                    <>
+                      <li className="text-gray-400 text-xs font-bold uppercase mt-4 mb-1 border-b border-gray-700 pb-1">
+                        Service & Logistics
+                      </li>
+                      {quote.charges.sFittingCost > 0 && (
+                        <li className="flex justify-between items-end border-b border-gray-800/50 pb-1 text-gray-300">
+                          <span className="pr-4 text-xs">Slotted Fitting</span>
+                          <span className="font-mono text-xs">
+                            <span className="text-gray-500">
+                              {quote.charges.totalSlottedPlates} plate * ₹
+                              {quote.charges.sFittingRate} ={" "}
+                            </span>
+                            <strong className="text-white inline-block w-16 text-right">
+                              ₹{quote.charges.sFittingCost}
+                            </strong>
+                          </span>
+                        </li>
+                      )}
+                      {quote.charges.wFittingCost > 0 && (
+                        <li className="flex justify-between items-end border-b border-gray-800/50 pb-1 text-gray-300">
+                          <span className="pr-4 text-xs">Wall Fitting</span>
+                          <span className="font-mono text-xs">
+                            <span className="text-gray-500">
+                              {quote.charges.totalWallChannels} ch. * ₹
+                              {quote.charges.wFittingRate} ={" "}
+                            </span>
+                            <strong className="text-white inline-block w-16 text-right">
+                              ₹{quote.charges.wFittingCost}
+                            </strong>
+                          </span>
+                        </li>
+                      )}
+                      {quote.charges.rentCost > 0 && (
+                        <li className="flex justify-between items-end border-b border-gray-800/50 pb-1 text-gray-300">
+                          <span className="pr-4 text-xs">Rickshaw Rent</span>
+                          <span className="font-mono text-xs">
+                            <strong className="text-white inline-block w-16 text-right">
+                              ₹{quote.charges.rentCost}
+                            </strong>
+                          </span>
+                        </li>
+                      )}
+                    </>
+                  )}
+                </ul>
+
+                <div className="pt-2 mt-6">
+                  <div className="flex justify-between items-end bg-gray-800 p-4 rounded-lg border border-gray-700">
+                    <span className="text-lg font-medium text-gray-300">
+                      Grand Total:
+                    </span>
+                    <span className="text-3xl font-bold text-green-400">
+                      ₹
+                      {quote.grandTotal.toLocaleString("en-IN", {
+                        maximumFractionDigits: 0,
+                      })}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {quote && (
+            <div className="mt-6 space-y-4">
+              {/* CUSTOMER INFO BLOCK */}
+              <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                <label className="block text-sm font-bold text-gray-700 mb-2">
+                  Customer Mobile Number
+                </label>
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="relative flex-1">
+                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-500 font-bold">
+                      +91
+                    </span>
+                    <input
+                      type="tel"
+                      placeholder="9876543210"
+                      value={customerPhone}
+                      onChange={(e) => setCustomerPhone(e.target.value)}
+                      className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none text-lg font-medium"
+                      maxLength={10}
+                    />
+                  </div>
+
+                  {/* DIRECT WHATSAPP BUTTON */}
+                  <button
+                    onClick={handleWhatsAppShare}
+                    className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm whitespace-nowrap"
+                  >
+                    <svg viewBox="0 0 24 24" className="w-5 h-5 fill-current">
+                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51h-.57c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
+                    </svg>
+                    Send WhatsApp
+                  </button>
+                </div>
+              </div>
+
+              {/* ORIGINAL SHARE BUTTON */}
+              <button
+                onClick={handleShareSnapshot}
+                disabled={isCapturing}
+                className="w-full bg-gray-800 hover:bg-gray-700 disabled:opacity-75 text-white font-bold py-3.5 rounded-lg transition-colors shadow-lg flex items-center justify-center gap-2 text-lg"
+              >
+                <Share2 className="w-5 h-5" />{" "}
+                {isCapturing ? "Generating Image..." : "Share Quotation"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default RackConfigurator;
