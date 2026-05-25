@@ -4,12 +4,47 @@ import {
   WALL_STOPPER_MAP,
 } from "../constants/pricing";
 
+const STANDARD_SIZES = {
+  slotted: {
+    length: [{v: "2", in: 24}, {v: "3", in: 36}, {v: "4", in: 48}],
+    breadth: [{v: "12", in: 12}, {v: "15", in: 15}, {v: "18", in: 18}, {v: "24", in: 24}],
+    height: [{v: "3", in: 36}, {v: "4", in: 48}, {v: "5", in: 60}, {v: "6", in: 72}, {v: "6.5", in: 78}, {v: "7", in: 84}, {v: "8", in: 96}, {v: "10", in: 120}]
+  },
+  wall: {
+    length: [{v: "35.5", in: 35.5}, {v: "47.5", in: 47.5}],
+    breadth: [{v: "6.25", in: 6.25}, {v: "9.25", in: 9.25}, {v: "12.25", in: 12.25}, {v: "14.25", in: 14.25}, {v: "16.25", in: 16.25}],
+    height: [{v: "4", in: 48}, {v: "6", in: 72}]
+  },
+  pigeon: {
+    length: [{v: "2", in: 24}, {v: "3", in: 36}, {v: "4", in: 48}],
+    breadth: [{v: "12", in: 12}, {v: "15", in: 15}, {v: "18", in: 18}, {v: "24", in: 24}],
+    height: [{v: "3", in: 36}, {v: "4", in: 48}, {v: "5", in: 60}, {v: "6", in: 72}, {v: "6.5", in: 78}, {v: "7", in: 84}, {v: "8", in: 96}, {v: "10", in: 120}]
+  },
+  gondola: {
+    length: [{v: "3", in: 36}, {v: "4", in: 48}],
+    breadth: [{v: "6.25", in: 6.25}, {v: "9.25", in: 9.25}, {v: "12.25", in: 12.25}, {v: "14.25", in: 14.25}, {v: "16.25", in: 16.25}],
+    height: [{v: "4", in: 48}, {v: "5", in: 60}, {v: "6", in: 72}, {v: "7", in: 84}]
+  }
+};
+
+export const getPricingDim = (type, dimName, valueStr, customVal) => {
+  if (valueStr !== "custom") return valueStr;
+  const inches = parseFloat(customVal);
+  const arr = STANDARD_SIZES[type]?.[dimName];
+  if (!arr) return valueStr;
+  for (const size of arr) {
+    if (inches <= size.in) return size.v;
+  }
+  return arr[arr.length - 1].v;
+};
+
+
 export const calculateQuote = ({
   cart,
   overrides,
   slottedFittingRate,
   wallFittingRate,
-  pigeonFittingRate,
+  pigeonFittingCharge,
   gondolaFittingCharge,
   rickshawRent,
   isFittingOpted,
@@ -35,7 +70,6 @@ export const calculateQuote = ({
   const pCladdingGrp = {};
   const pDividersGrp = {};
   const pStoppersGrp = {};
-  let totalPigeonFittingParts = 0;
 
   // Wall Aggregators
   let wScrews = 0;
@@ -101,6 +135,11 @@ export const calculateQuote = ({
 
     // === SLOTTED ANGLE LOGIC ===
     if (type === "slotted") {
+      const pricingHeight = getPricingDim(type, "height", d.height, d.customHeight);
+      const pricingBreadth = getPricingDim(type, "breadth", d.breadth, d.customBreadth);
+      const displayHeight = d.height === "custom" ? `${d.customHeight}"` : `${d.height}ft`;
+      const displayBreadth = d.breadth === "custom" ? `${d.customBreadth}"` : `${d.breadth}"`;
+
       const angles = channelsOrAnglesCount * 2 * qty;
       const bolts = angles * (shelvesPerRack >= 2 ? 2 * shelvesPerRack + 4 : 8);
       sBolts += bolts;
@@ -108,26 +147,33 @@ export const calculateQuote = ({
       sBushes += angles;
 
       const aPrice =
-        (MOCK_PRICING.slotted.angles[d.height]?.[d.angleGauge] || 0) +
+        (MOCK_PRICING.slotted.angles[pricingHeight]?.[d.angleGauge] || 0) +
         (d.angleColor === "custom"
-          ? MOCK_PRICING.slotted.colorSurcharge.angles[d.height] || 0
+          ? MOCK_PRICING.slotted.colorSurcharge.angles[pricingHeight] || 0
           : 0);
-      const aLabel = `${d.height}ft Angle (${d.angleGauge}G)${d.angleColor === "custom" ? ` - Custom Color` : ""}`;
+      const aLabel = `${displayHeight} Angle (${d.angleGauge}G)${d.angleColor === "custom" ? ` - Custom Color` : ""}`;
       if (!sAnglesGrp[aLabel]) sAnglesGrp[aLabel] = { qty: 0, price: aPrice };
       sAnglesGrp[aLabel].qty += angles;
 
       let itemPlatesCost = 0;
-      bays.forEach((bayLength) => {
+      bays.forEach((bayItem) => {
+        const isCustomBay = typeof bayItem === "object" && bayItem.isCustom;
+        const rawBayVal = isCustomBay ? bayItem.val : bayItem;
+        const pricingLength = isCustomBay 
+          ? getPricingDim(type, "length", "custom", rawBayVal) 
+          : rawBayVal;
+        const displayLength = isCustomBay ? `${rawBayVal}"` : `${rawBayVal}'`;
+
         const pPrice =
-          (MOCK_PRICING.slotted.plates[`${bayLength}-${d.breadth}`]?.[
+          (MOCK_PRICING.slotted.plates[`${pricingLength}-${pricingBreadth}`]?.[
             d.plateGauge
           ] || 0) +
           (d.plateColor === "custom"
             ? MOCK_PRICING.slotted.colorSurcharge.plates[
-                `${bayLength}-${d.breadth}`
+                `${pricingLength}-${pricingBreadth}`
               ] || 0
             : 0);
-        const pLabel = `${bayLength}'x${d.breadth}" Plate (${d.plateGauge}G)${d.plateColor === "custom" ? ` - Custom Color` : ""}`;
+        const pLabel = `${displayLength}x${displayBreadth} Plate (${d.plateGauge}G)${d.plateColor === "custom" ? ` - Custom Color` : ""}`;
         if (!sPlatesGrp[pLabel]) sPlatesGrp[pLabel] = { qty: 0, price: pPrice };
         sPlatesGrp[pLabel].qty += totalPlatesInRow;
         itemPlatesCost += totalPlatesInRow * pPrice;
@@ -144,15 +190,64 @@ export const calculateQuote = ({
 
     // === PIGEON HOLE LOGIC ===
     else if (type === "pigeon") {
+      const pricingHeight = getPricingDim(type, "height", d.height, d.customHeight);
+      const pricingBreadth = getPricingDim(type, "breadth", d.breadth, d.customBreadth);
+      const displayHeight = d.height === "custom" ? `${d.customHeight}"` : `${d.height}ft`;
+      const displayBreadth = d.breadth === "custom" ? `${d.customBreadth}"` : `${d.breadth}"`;
+
+      const isCustomBay = typeof bays[0] === "object" && bays[0].isCustom;
+      const rawBayVal = isCustomBay ? bays[0].val : bays[0];
+      const pricingLength = isCustomBay 
+        ? getPricingDim(type, "length", "custom", rawBayVal) 
+        : rawBayVal;
+      const displayLength = isCustomBay ? `${rawBayVal}"` : `${rawBayVal}'`;
+      // For arithmetic, we need length in feet and breadth in inches. 
+      // If it's custom, convert inches to feet if necessary, or just use the inches value appropriately.
+      const numLengthFt = isCustomBay ? parseFloat(rawBayVal) / 12 : parseFloat(rawBayVal);
+      const numBreadthInches = d.breadth === "custom" ? parseFloat(d.customBreadth) : parseFloat(d.breadth);
+      const numHeightFt = d.height === "custom" ? parseFloat(d.customHeight) / 12 : parseFloat(d.height);
+
       const angles = 4 * qty;
-      const verticalDividerLines = d.columns - 1;
       const spacesBetweenPlates = Math.max(1, shelvesPerRack - 1);
-      const totalIndividualDividers =
-        verticalDividerLines * spacesBetweenPlates;
+      let totalIndividualDividers = 0;
+
+      // Determine columns for each space gap
+      const spaceCols = [];
+      for (let s = 0; s < spacesBetweenPlates; s++) {
+        const cols = (d.useCustomColumns && Array.isArray(d.customColumns) && d.customColumns[s] !== undefined)
+          ? d.customColumns[s]
+          : d.columns;
+        const finalCols = Math.max(1, cols);
+        spaceCols.push(finalCols);
+        totalIndividualDividers += finalCols - 1;
+      }
+
+      // Calculate total divider bolts using fractional positions union at each plate level
+      let totalDividerBolts = 0;
+      for (let p = 0; p < shelvesPerRack; p++) {
+        const posBelow = new Set();
+        if (p > 0) {
+          const colsBelow = spaceCols[p - 1];
+          for (let i = 1; i < colsBelow; i++) {
+            posBelow.add((i / colsBelow).toFixed(6));
+          }
+        }
+
+        const posAbove = new Set();
+        if (p < spacesBetweenPlates) {
+          const colsAbove = spaceCols[p];
+          for (let i = 1; i < colsAbove; i++) {
+            posAbove.add((i / colsAbove).toFixed(6));
+          }
+        }
+
+        const union = new Set([...posBelow, ...posAbove]);
+        totalDividerBolts += union.size * 2;
+      }
 
       const baseBolts =
-        angles * (shelvesPerRack >= 2 ? 2 * shelvesPerRack + 4 : 8);
-      const extraBolts = 2 * shelvesPerRack * verticalDividerLines * qty;
+        angles * (shelvesPerRack >= 2 ? 2 * shelvesPerRack + 4 : 8) - 8 * qty;
+      const extraBolts = totalDividerBolts * qty;
       const bolts = baseBolts + extraBolts;
 
       const corners = 4 * qty;
@@ -162,32 +257,32 @@ export const calculateQuote = ({
       pCorners += corners;
       pBushes += bushes;
 
-      const aPrice = MOCK_PRICING.slotted.angles[d.height]?.[d.angleGauge] || 0;
-      const aLabel = `${d.height}ft Angle (${d.angleGauge}G)`;
+      const aPrice = MOCK_PRICING.slotted.angles[pricingHeight]?.[d.angleGauge] || 0;
+      const aLabel = `${displayHeight} Angle (${d.angleGauge}G)`;
       if (!pAnglesGrp[aLabel]) pAnglesGrp[aLabel] = { qty: 0, price: aPrice };
       pAnglesGrp[aLabel].qty += angles;
 
       const pPrice =
-        MOCK_PRICING.slotted.plates[`${bays[0]}-${d.breadth}`]?.[
+        MOCK_PRICING.slotted.plates[`${pricingLength}-${pricingBreadth}`]?.[
           d.plateGauge
         ] || 0;
-      const pLabel = `${bays[0]}'x${d.breadth}" Plate (${d.plateGauge}G)`;
+      const pLabel = `${displayLength}x${displayBreadth} Plate (${d.plateGauge}G)`;
       if (!pPlatesGrp[pLabel]) pPlatesGrp[pLabel] = { qty: 0, price: pPrice };
       pPlatesGrp[pLabel].qty += totalPlatesInRow;
 
       // Cladding Sheets
-      const backAreaSqFt = bays[0] * parseFloat(d.height);
-      const sideAreaSqFt = (parseFloat(d.breadth) / 12) * parseFloat(d.height);
+      const backAreaSqFt = numLengthFt * numHeightFt;
+      const sideAreaSqFt = (numBreadthInches / 12) * numHeightFt;
       const claddingRate = MOCK_PRICING.pigeon.rates.claddingPerSqFt;
 
       const backPrice = Math.round(backAreaSqFt * claddingRate);
-      const backLabel = `${bays[0]}ft x ${d.height}ft Back Cladding`;
+      const backLabel = `${displayLength} W x ${displayHeight} H Back Cladding`;
       if (!pCladdingGrp[backLabel])
         pCladdingGrp[backLabel] = { qty: 0, price: backPrice };
       pCladdingGrp[backLabel].qty += 1 * qty;
 
       const sidePrice = Math.round(sideAreaSqFt * claddingRate);
-      const sideLabel = `${d.breadth}" x ${d.height}ft Side Cladding`;
+      const sideLabel = `${displayBreadth} D x ${displayHeight} H Side Cladding`;
       if (!pCladdingGrp[sideLabel])
         pCladdingGrp[sideLabel] = { qty: 0, price: sidePrice };
       pCladdingGrp[sideLabel].qty += 2 * qty;
@@ -197,12 +292,12 @@ export const calculateQuote = ({
       let dividerCost = 0;
       if (totalIndividualDividers > 0) {
         const dividerHeightFt =
-          (parseFloat(d.height) - 0.25) / spacesBetweenPlates;
-        const divAreaSqFt = (parseFloat(d.breadth) / 12) * dividerHeightFt;
+          (numHeightFt - 0.25) / spacesBetweenPlates;
+        const divAreaSqFt = (numBreadthInches / 12) * dividerHeightFt;
         const dividerRate = MOCK_PRICING.pigeon.rates.dividerPerSqFt;
 
         const divPrice = Math.round(divAreaSqFt * dividerRate);
-        const divLabel = `${d.breadth}" x ${(dividerHeightFt * 12).toFixed(1)}" Divider`;
+        const divLabel = `${displayBreadth} x ${(dividerHeightFt * 12).toFixed(1)}" Divider`;
         if (!pDividersGrp[divLabel])
           pDividersGrp[divLabel] = { qty: 0, price: divPrice };
         pDividersGrp[divLabel].qty += totalIndividualDividers * qty;
@@ -213,19 +308,16 @@ export const calculateQuote = ({
       let stopperCost = 0;
       if (d.hasStopper && shelvesPerRack > 1) {
         const stopperRows = shelvesPerRack - 1;
-        const stopperAreaSqFt = (3 / 12) * parseFloat(bays[0]);
+        const stopperAreaSqFt = (3 / 12) * numLengthFt;
         const stopperRate = MOCK_PRICING.pigeon.rates.stopperPerSqFt;
 
         const stopperPrice = Math.round(stopperAreaSqFt * stopperRate);
-        const stLabel = `${bays[0]}ft x 3" Stopper`;
+        const stLabel = `${displayLength} W x 3" Stopper`;
         if (!pStoppersGrp[stLabel])
           pStoppersGrp[stLabel] = { qty: 0, price: stopperPrice };
         pStoppersGrp[stLabel].qty += stopperRows * qty;
         stopperCost = stopperRows * stopperPrice * qty;
       }
-
-      totalPigeonFittingParts +=
-        (shelvesPerRack + totalIndividualDividers + 3) * qty;
 
       itemTotal =
         angles * aPrice +
@@ -240,153 +332,213 @@ export const calculateQuote = ({
 
     // === WALL MOUNTED LOGIC ===
     else if (type === "wall") {
+      const pricingHeight = getPricingDim(type, "height", d.height, d.customHeight);
+      const pricingBreadth = getPricingDim(type, "breadth", d.breadth, d.customBreadth);
+      const displayHeight = d.height === "custom" ? `${d.customHeight}"` : `${d.height}ft`;
+      const displayBreadth = d.breadth === "custom" ? `${d.customBreadth}"` : `${d.breadth}"`;
+
       const channels = channelsOrAnglesCount * qty;
       totalWallChannels += channels;
 
-      const cPrice = MOCK_PRICING.wall.channels[d.height] || 0;
-      const cLabel = `${d.height}ft Channel`;
+      const cPrice = MOCK_PRICING.wall.channels[pricingHeight] || 0;
+      const cLabel = `${displayHeight} Channel`;
       if (!wChannelsGrp[cLabel])
         wChannelsGrp[cLabel] = { qty: 0, price: cPrice };
       wChannelsGrp[cLabel].qty += channels;
 
-      const screws = channels * (d.height === "4" ? 5 : 7);
+      const screws = channels * (pricingHeight === "4" ? 5 : 7);
       wScrews += screws;
-
-      const brackets =
-        (channelsOrAnglesCount +
-          (d.hasStopper ? Math.max(0, bays.length - 1) : 0)) *
-        shelvesPerRack *
-        qty;
-      const bracketSize = WALL_BRACKET_MAP[d.breadth];
-      const bPrice = MOCK_PRICING.wall.brackets[bracketSize] || 0;
-      const bLabel = `${bracketSize}" Bracket`;
-      if (!wBracketsGrp[bLabel])
-        wBracketsGrp[bLabel] = { qty: 0, price: bPrice };
-      wBracketsGrp[bLabel].qty += brackets;
 
       let itemPlatesCost = 0;
       let itemStoppersCost = 0;
-      bays.forEach((bayLength) => {
-        const pPrice =
-          MOCK_PRICING.wall.plates[`${bayLength}-${d.breadth}`]?.[
-            d.plateGauge
-          ] || 0;
-        const gaugeLabel =
-          d.plateGauge === "22D" ? "22G (Double Part)" : `${d.plateGauge}G`;
-        const pLabel = `${bayLength}"x${d.breadth}" Plate (${gaugeLabel})`;
-        if (!wPlatesGrp[pLabel]) wPlatesGrp[pLabel] = { qty: 0, price: pPrice };
-        wPlatesGrp[pLabel].qty += totalPlatesInRow;
-        itemPlatesCost += totalPlatesInRow * pPrice;
+      let itemBracketsCost = 0;
 
-        if (d.hasStopper) {
-          const stopperSize = WALL_STOPPER_MAP[bayLength];
-          const stPrice = MOCK_PRICING.wall.stoppers[stopperSize] || 0;
-          const stLabel = `${stopperSize}ft Stopper`;
-          if (!wStoppersGrp[stLabel])
-            wStoppersGrp[stLabel] = { qty: 0, price: stPrice };
-          wStoppersGrp[stLabel].qty += totalPlatesInRow;
-          itemStoppersCost += totalPlatesInRow * stPrice;
-        }
-      });
+      for (let s = 0; s < shelvesPerRack; s++) {
+        // Resolve breadth for this layer
+        const layerIdx = shelvesPerRack - 1 - s;
+        const layerBreadthRaw = (d.useCustomBreadths && Array.isArray(d.customBreadths) && d.customBreadths[layerIdx] !== undefined)
+          ? d.customBreadths[layerIdx]
+          : d.breadth;
+        const layerCustomVal = (d.useCustomBreadths && Array.isArray(d.customBreadthsVals) && d.customBreadthsVals[layerIdx] !== undefined)
+          ? d.customBreadthsVals[layerIdx]
+          : (d.customBreadth || "10");
+        const layerPricingBreadth = getPricingDim(type, "breadth", layerBreadthRaw, layerCustomVal);
+        const layerDisplayBreadth = layerBreadthRaw === "custom" ? `${layerCustomVal}"` : `${layerBreadthRaw}"`;
+
+        // Brackets for this layer
+        const layerBrackets = (channelsOrAnglesCount + (d.hasStopper ? Math.max(0, bays.length - 1) : 0)) * qty;
+        const bracketSize = WALL_BRACKET_MAP[layerPricingBreadth];
+        const actualBreadth = parseFloat(layerBreadthRaw === "custom" ? layerCustomVal : layerBreadthRaw);
+        const displayBracket = actualBreadth + 0.75;
+        const bPrice = MOCK_PRICING.wall.brackets[bracketSize] || 0;
+        const bLabel = `${displayBracket}" Bracket`;
+        if (!wBracketsGrp[bLabel])
+          wBracketsGrp[bLabel] = { qty: 0, price: bPrice };
+        wBracketsGrp[bLabel].qty += layerBrackets;
+        itemBracketsCost += layerBrackets * bPrice;
+
+        // Plates and Stoppers for this layer across all bays
+        bays.forEach((bayItem) => {
+          const isCustomBay = typeof bayItem === "object" && bayItem.isCustom;
+          const rawBayVal = isCustomBay ? bayItem.val : bayItem;
+          const pricingLength = isCustomBay 
+            ? getPricingDim(type, "length", "custom", rawBayVal) 
+            : rawBayVal;
+          const displayLength = isCustomBay ? `${rawBayVal}"` : `${rawBayVal}"`;
+
+          const pPrice =
+            MOCK_PRICING.wall.plates[`${pricingLength}-${layerPricingBreadth}`]?.[
+              d.plateGauge
+            ] || 0;
+          const gaugeLabel =
+            d.plateGauge === "22D" ? "22G (Double Part)" : `${d.plateGauge}G`;
+          const pLabel = `${displayLength}x${layerDisplayBreadth} Plate (${gaugeLabel})`;
+          if (!wPlatesGrp[pLabel]) wPlatesGrp[pLabel] = { qty: 0, price: pPrice };
+          wPlatesGrp[pLabel].qty += qty;
+          itemPlatesCost += qty * pPrice;
+
+          if (d.hasStopper) {
+            const stopperSize = WALL_STOPPER_MAP[pricingLength];
+            const stPrice = MOCK_PRICING.wall.stoppers[stopperSize] || 0;
+            const stLabel = isCustomBay ? `${rawBayVal}" Stopper` : `${stopperSize}ft Stopper`;
+            if (!wStoppersGrp[stLabel])
+              wStoppersGrp[stLabel] = { qty: 0, price: stPrice };
+            wStoppersGrp[stLabel].qty += qty;
+            itemStoppersCost += qty * stPrice;
+          }
+        });
+      }
 
       itemTotal =
         channels * cPrice +
         itemPlatesCost +
         itemStoppersCost +
-        brackets * bPrice +
+        itemBracketsCost +
         screws * MOCK_PRICING.wall.hardware.screw;
     }
 
     // === GONDOLA RACK LOGIC ===
     else if (type === "gondola") {
+      const pricingHeight = getPricingDim(type, "height", d.height, d.customHeight);
+      const displayHeight = d.height === "custom" ? `${d.customHeight}"` : `${d.height}ft`;
+
       const isDouble = d.isDoubleSided;
       const mult = isDouble ? 2 : 1;
-      const bayLength = bays[0]; // Strict standalone (3 or 4)
 
-      // 1. Stands
-      const standsQty = 2 * qty;
+      // 1. Stands — shared between bays: (bays.length + 1) stands per row
+      const standsQty = (bays.length + 1) * qty;
       const sPrice =
-        MOCK_PRICING.gondola.stands[d.height][isDouble ? "double" : "single"];
-      const sLabel = `${d.height}ft Gondola Stand (${isDouble ? "Double" : "Single"} Sided)`;
+        MOCK_PRICING.gondola.stands[pricingHeight][isDouble ? "double" : "single"];
+      const sLabel = `${displayHeight} Gondola Stand (${isDouble ? "Double" : "Single"} Sided)`;
       if (!gStandsGrp[sLabel]) gStandsGrp[sLabel] = { qty: 0, price: sPrice };
       gStandsGrp[sLabel].qty += standsQty;
 
-      // 2. Buffers
-      gBuffers += 4 * qty;
+      // 2. Buffers — 2 per stand
+      gBuffers += 2 * standsQty;
 
-      // 3. Cladding
-      const claddingAreaSqFt = bayLength * parseFloat(d.height);
-      const cRate = MOCK_PRICING.gondola.rates.claddingPerSqFt;
-      const cPrice = Math.round(claddingAreaSqFt * cRate);
-      const cLabel = `${bayLength}ft W x ${d.height}ft H Gondola Cladding`;
-      if (!gCladdingGrp[cLabel])
-        gCladdingGrp[cLabel] = { qty: 0, price: cPrice };
-      gCladdingGrp[cLabel].qty += mult * qty;
-
-      // 4. Bottom Base Decks
-      const bPrice = MOCK_PRICING.gondola.bottoms[bayLength];
-      const bLabel = `${bayLength}ft Gondola Bottom Base`;
-      if (!gBottomsGrp[bLabel]) gBottomsGrp[bLabel] = { qty: 0, price: bPrice };
-      gBottomsGrp[bLabel].qty += mult * qty;
-
-      // 5. Plates & Brackets (Mapped to Wall Pricing)
-      const totalPlates = shelvesPerRack * mult * qty;
-      const plateLenInches = bayLength === 3 ? "35.5" : "47.5"; // Map to wall inches
-      const pPrice =
-        MOCK_PRICING.wall.plates[`${plateLenInches}-${d.breadth}`]?.[
-          d.plateGauge
-        ] || 0;
-
-      const gaugeLabel =
-        d.plateGauge === "22D" ? "22G (Double)" : `${d.plateGauge}G`;
-      const pLabel = `${plateLenInches}"x${d.breadth}" Plate (${gaugeLabel})`;
-      if (!gPlatesGrp[pLabel]) gPlatesGrp[pLabel] = { qty: 0, price: pPrice };
-      gPlatesGrp[pLabel].qty += totalPlates;
-
-      const totalBrackets = 2 * totalPlates; // 2 brackets per plate
-      const bracketSize = WALL_BRACKET_MAP[d.breadth];
-      const brPrice = MOCK_PRICING.wall.brackets[bracketSize] || 0;
-      const brLabel = `${bracketSize}" Bracket`;
-      if (!gBracketsGrp[brLabel])
-        gBracketsGrp[brLabel] = { qty: 0, price: brPrice };
-      gBracketsGrp[brLabel].qty += totalBrackets;
-
-      // 6. Stoppers
+      let itemPlatesCost = 0;
+      let itemBracketsCost = 0;
       let itemStoppersCost = 0;
-      if (d.hasStopper) {
-        const stPrice = MOCK_PRICING.wall.stoppers[bayLength] || 0;
-        const stLabel = `${bayLength}ft Stopper`;
-        if (!gStoppersGrp[stLabel])
-          gStoppersGrp[stLabel] = { qty: 0, price: stPrice };
-        gStoppersGrp[stLabel].qty += totalPlates;
-        itemStoppersCost = totalPlates * stPrice;
-      }
+      let itemCladdingCost = 0;
+      let itemBottomsCost = 0;
+
+      // 3. Per-bay material (cladding, bottoms, plates, brackets, stoppers)
+      bays.forEach((bay) => {
+        const isCustomBay = typeof bay === "object" && bay.isCustom;
+        const rawBayVal = isCustomBay ? bay.val : bay;
+        const pricingLength = isCustomBay
+          ? getPricingDim(type, "length", "custom", rawBayVal)
+          : rawBayVal;
+        const displayLength = isCustomBay ? `${rawBayVal}"` : `${rawBayVal}ft`;
+        const numLengthFt = isCustomBay ? parseFloat(rawBayVal) / 12 : parseFloat(rawBayVal);
+        const numHeightFt = d.height === "custom" ? parseFloat(d.customHeight) / 12 : parseFloat(d.height);
+
+        // Cladding
+        const claddingAreaSqFt = numLengthFt * numHeightFt;
+        const cRate = MOCK_PRICING.gondola.rates.claddingPerSqFt;
+        const cPrice = Math.round(claddingAreaSqFt * cRate);
+        const cLabel = `${displayLength} W x ${displayHeight} H Gondola Cladding`;
+        if (!gCladdingGrp[cLabel]) gCladdingGrp[cLabel] = { qty: 0, price: cPrice };
+        gCladdingGrp[cLabel].qty += mult * qty;
+        itemCladdingCost += mult * qty * cPrice;
+
+        // Bottom Base Deck
+        const bPrice = MOCK_PRICING.gondola.bottoms[pricingLength];
+        const bLabel = `${displayLength} Gondola Bottom Base`;
+        if (!gBottomsGrp[bLabel]) gBottomsGrp[bLabel] = { qty: 0, price: bPrice };
+        gBottomsGrp[bLabel].qty += mult * qty;
+        itemBottomsCost += mult * qty * bPrice;
+
+        // Plates, Brackets & Stoppers (per layer)
+        for (let s = 0; s < shelvesPerRack; s++) {
+          const layerBreadthRaw = (d.useCustomBreadths && Array.isArray(d.customBreadths) && d.customBreadths[s] !== undefined)
+            ? d.customBreadths[s]
+            : d.breadth;
+          const layerCustomVal = (d.useCustomBreadths && Array.isArray(d.customBreadthsVals) && d.customBreadthsVals[s] !== undefined)
+            ? d.customBreadthsVals[s]
+            : (d.customBreadth || "10");
+          const layerPricingBreadth = getPricingDim(type, "breadth", layerBreadthRaw, layerCustomVal);
+          const layerDisplayBreadth = layerBreadthRaw === "custom" ? `${layerCustomVal}"` : `${layerBreadthRaw}"`;
+
+          const layerPlates = mult * qty;
+          const plateLenInchesPricing = String(pricingLength) === "3" ? "35.5" : "47.5";
+          const plateLenInchesDisplay = isCustomBay ? `${rawBayVal - 0.5}` : plateLenInchesPricing;
+          const pPrice =
+            MOCK_PRICING.wall.plates[`${plateLenInchesPricing}-${layerPricingBreadth}`]?.[
+              d.plateGauge
+            ] || 0;
+
+          const gaugeLabel = d.plateGauge === "22D" ? "22G (Double Part)" : `${d.plateGauge}G`;
+          const pLabel = `${plateLenInchesDisplay}"x${layerDisplayBreadth} Plate (${gaugeLabel})`;
+          if (!gPlatesGrp[pLabel]) gPlatesGrp[pLabel] = { qty: 0, price: pPrice };
+          gPlatesGrp[pLabel].qty += layerPlates;
+          itemPlatesCost += layerPlates * pPrice;
+
+          const layerBrackets = 2 * layerPlates;
+          const bracketSize = WALL_BRACKET_MAP[layerPricingBreadth];
+          const actualBreadth = parseFloat(layerBreadthRaw === "custom" ? layerCustomVal : layerBreadthRaw);
+          const displayBracket = actualBreadth + 0.75;
+          const brPrice = MOCK_PRICING.wall.brackets[bracketSize] || 0;
+          const brLabel = `${displayBracket}" Bracket`;
+          if (!gBracketsGrp[brLabel]) gBracketsGrp[brLabel] = { qty: 0, price: brPrice };
+          gBracketsGrp[brLabel].qty += layerBrackets;
+          itemBracketsCost += layerBrackets * brPrice;
+
+          if (d.hasStopper) {
+            const stPrice = MOCK_PRICING.wall.stoppers[pricingLength] || 0;
+            const stLabel = `${displayLength} Stopper`;
+            if (!gStoppersGrp[stLabel]) gStoppersGrp[stLabel] = { qty: 0, price: stPrice };
+            gStoppersGrp[stLabel].qty += layerPlates;
+            itemStoppersCost += layerPlates * stPrice;
+          }
+        }
+      });
 
       itemTotal =
         standsQty * sPrice +
-        4 * qty * MOCK_PRICING.gondola.hardware.buffer +
-        mult * qty * cPrice +
-        mult * qty * bPrice +
-        totalPlates * pPrice +
-        totalBrackets * brPrice +
+        2 * standsQty * MOCK_PRICING.gondola.hardware.buffer +
+        itemCladdingCost +
+        itemBottomsCost +
+        itemPlatesCost +
+        itemBracketsCost +
         itemStoppersCost;
     }
     if (item.isCustomPart) {
       return {
         ...item,
-        partPrice: Math.round(item.partPrice * m),
-        itemTotal: Math.round(item.itemTotal * m),
+        partPrice: Math.round(item.partPrice * m * 100) / 100, // Round to 2 decimals
+        itemTotal: Math.round(item.itemTotal * m * 100) / 100,
       };
     }
 
-    return { ...item, itemTotal: Math.round(itemTotal * m) };
+    return { ...item, itemTotal: Math.round(itemTotal * m * 100) / 100 };
   });
 
   const mapOverrides = (group) =>
     Object.entries(group).map(([label, data]) => {
       const finalQty =
         overrides[label] !== undefined ? overrides[label] : data.qty;
-      const unitPrice = Math.round(data.price * m);
+      const unitPrice = Math.round(data.price * m * 100) / 100; // Round to 2 decimals
       return {
         label,
         baseQty: data.qty,
@@ -440,7 +592,7 @@ export const calculateQuote = ({
       ? overrides.gondolaBuffers
       : gBuffers;
 
-  const hwPrice = (val) => Math.round(val * m);
+  const hwPrice = (val) => Math.round(val * m * 100) / 100; // Round to 2 decimals
   const hardwarePrices = {
     bolt: hwPrice(MOCK_PRICING.slotted.hardware.bolt),
     corner: hwPrice(MOCK_PRICING.slotted.hardware.corner),
@@ -506,21 +658,29 @@ export const calculateQuote = ({
     dGondolaCladding.length > 0 ||
     dGondolaBottoms.length > 0;
 
-  // Calculate Fitting Costs (Now placed AFTER we know what items exist)
+  // Calculate Fitting Costs & Rent WITH Markup applied
   const activeSRate = parseInt(slottedFittingRate) || 0;
   const activeWRate = parseInt(wallFittingRate) || 0;
-  const activePRate = parseInt(pigeonFittingRate) || 0;
-  const activeRent = parseInt(rickshawRent) || 0;
 
-  const sFittingCost = isFittingOpted ? totalSlottedPlates * activeSRate : 0;
-  const wFittingCost = isFittingOpted ? totalWallChannels * activeWRate : 0;
-  const pFittingCost = isFittingOpted
-    ? totalPigeonFittingParts * activePRate
+  // Apply the 9% multiplier (m) to the final calculated costs
+  const activeRent = Math.round((parseInt(rickshawRent) || 0) * m);
+  const sFittingCost = isFittingOpted
+    ? Math.round(totalSlottedPlates * activeSRate * m)
     : 0;
-
-  // NEW: Gondola Flat Fitting Cost
+  const wFittingCost = isFittingOpted
+    ? Math.round(totalWallChannels * activeWRate * m)
+    : 0;
+  const pFittingCost = isFittingOpted && pHasItems
+    ? Math.round((parseFloat(pigeonFittingCharge) || 0) * m)
+    : 0;
   const gFittingCost =
-    isFittingOpted && gHasItems ? parseFloat(gondolaFittingCharge) || 0 : 0;
+    isFittingOpted && gHasItems
+      ? Math.round((parseFloat(gondolaFittingCharge) || 0) * m)
+      : 0;
+
+  // We also export the 'marked up' rate so the unit cost in the PDF prints correctly
+  const m_activeSRate = Math.round(activeSRate * m * 100) / 100;
+  const m_activeWRate = Math.round(activeWRate * m * 100) / 100;
 
   return {
     slotted: {
@@ -562,16 +722,17 @@ export const calculateQuote = ({
     },
     charges: {
       sFittingCost,
-      sFittingRate: activeSRate,
+      sFittingRate: m_activeSRate, // Output the marked-up unit rate
       totalSlottedPlates,
+
       wFittingCost,
-      wFittingRate: activeWRate,
+      wFittingRate: m_activeWRate, // Output the marked-up unit rate
       totalWallChannels,
+
       pFittingCost,
-      pFittingRate: activePRate,
-      totalPigeonFittingParts,
+
       gFittingCost,
-      rentCost: activeRent,
+      rentCost: activeRent, // Marked up rent
     },
     hardwarePrices,
     grandTotal:

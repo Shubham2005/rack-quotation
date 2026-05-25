@@ -6,18 +6,53 @@ const RackSchematic = ({ item }) => {
   const isPigeon = type === "pigeon";
   const isGondola = type === "gondola";
 
-  const heightFt = parseFloat(dimensions.height);
-  const breadthInches = parseFloat(dimensions.breadth);
+  const getDimVal = (dimName) => {
+    let val = dimensions[dimName];
+    if (val === "custom") {
+      val =
+        dimensions[
+        `custom${dimName.charAt(0).toUpperCase() + dimName.slice(1)}`
+        ];
+    }
+    return parseFloat(val) || 0;
+  };
+
+  const getBayVal = (bay) => {
+    if (typeof bay === "object" && bay !== null && bay.isCustom) {
+      return bay.val;
+    }
+    return parseFloat(bay);
+  };
+
+  const isCustomBay = (bay) => {
+    return typeof bay === "object" && bay !== null && bay.isCustom;
+  };
+
+  const rawHeight = getDimVal("height");
+  // If height is custom, the user entered inches. The schematic expects feet.
+  const heightFt =
+    dimensions.height === "custom" ? rawHeight / 12 : parseFloat(rawHeight);
+  const heightInches =
+    dimensions.height === "custom" ? rawHeight : parseFloat(rawHeight) * 12;
+
+  // Breadth is always stored/entered in inches
+  const breadthInches = getDimVal("breadth");
 
   const scale = 30;
   const paddingX = 40;
   const paddingY = 30;
 
   // --- Front View Math (Width) - For Standard Racks ---
-  const totalWidthFt = bays.reduce(
-    (a, b) => a + (isWall ? Math.round(b / 12) : b),
-    0,
-  );
+  const totalWidthFt = bays.reduce((a, b) => {
+    if (isCustomBay(b)) return a + b.val / 12;
+    const val = parseFloat(b);
+    if (isWall) {
+      if (val === 35.5) return a + 3;
+      if (val === 47.5) return a + 4;
+      return a + val / 12;
+    }
+    return a + val;
+  }, 0);
   const frontSvgWidth = totalWidthFt * scale + paddingX * 2;
   const svgHeight = heightFt * scale + paddingY * 2;
 
@@ -26,24 +61,37 @@ const RackSchematic = ({ item }) => {
   const bayCenters = [];
 
   bays.forEach((bay) => {
-    const bayFt = isWall ? Math.round(bay / 12) : bay;
+    let bayFt;
+    let label;
+    if (isCustomBay(bay)) {
+      bayFt = bay.val / 12;
+      label = `${bay.val}"`;
+    } else {
+      const val = parseFloat(bay);
+      if (isWall) {
+        if (val === 35.5) {
+          bayFt = 3;
+          label = "3 '";
+        } else if (val === 47.5) {
+          bayFt = 4;
+          label = "4 '";
+        } else {
+          bayFt = val / 12;
+          label = `${val}"`;
+        }
+      } else {
+        bayFt = val;
+        label = `${val}'`;
+      }
+    }
     const bayPixels = bayFt * scale;
     bayCenters.push({
       x: currentX + bayPixels / 2,
-      label: isWall ? `${bay}"` : `${bay}'`,
+      label,
     });
     currentX += bayPixels;
     frontUprights.push(currentX);
   });
-
-  // --- Vertical Dividers (Pigeon Hole Only) ---
-  const pigeonDividersX = [];
-  if (isPigeon && dimensions.columns > 1) {
-    const colWidthPixels = (totalWidthFt * scale) / dimensions.columns;
-    for (let i = 1; i < dimensions.columns; i++) {
-      pigeonDividersX.push(paddingX + i * colWidthPixels);
-    }
-  }
 
   // --- Side View Math (Depth) - For Standard Racks ---
   const depthFt = breadthInches / 12;
@@ -67,10 +115,34 @@ const RackSchematic = ({ item }) => {
   }
 
   // --- Pigeon Hole Individual Box Math ---
-  const boxWidthInches = (
-    (totalWidthFt * 12) /
-    Math.max(1, dimensions.columns)
-  ).toFixed(1);
+  const getBoxWidthInches = () => {
+    const totalLenIn = totalWidthFt * 12;
+    if (
+      dimensions.useCustomColumns &&
+      Array.isArray(dimensions.customColumns)
+    ) {
+      const uniqueCols = Array.from(
+        new Set(
+          dimensions.customColumns.map((c) =>
+            c === "" ? 3 : Math.max(1, parseInt(c) || 3),
+          ),
+        ),
+      );
+      if (uniqueCols.length === 1) {
+        return `${(totalLenIn / uniqueCols[0]).toFixed(1)}`;
+      }
+      const sortedWidths = uniqueCols
+        .map((c) => totalLenIn / Math.max(1, c))
+        .sort((a, b) => a - b);
+      return `${sortedWidths[0].toFixed(1)} to ${sortedWidths[sortedWidths.length - 1].toFixed(1)}`;
+    }
+    const finalCols =
+      dimensions.columns === ""
+        ? 3
+        : Math.max(1, parseInt(dimensions.columns) || 3);
+    return `${(totalLenIn / finalCols).toFixed(1)}`;
+  };
+  const boxWidthInches = getBoxWidthInches();
   const boxHeightInches = (
     (heightFt * 12 - 3) /
     Math.max(1, shelvesPerRack - 1)
@@ -78,12 +150,33 @@ const RackSchematic = ({ item }) => {
   const boxDepthInches = breadthInches;
 
   // --- GONDOLA SPECIFIC MATH ---
-  const gWidth = isGondola ? parseInt(bays[0]) * 12 : 0;
+  const getBayInches = (b) => {
+    if (isCustomBay(b)) return b.val;
+    return parseFloat(b) * 12;
+  };
+  const gondolaTotalWidthInches = isGondola
+    ? bays.reduce((a, b) => a + getBayInches(b), 0)
+    : 0;
+  const gWidth = gondolaTotalWidthInches;
   const gHeight = heightFt * 12;
   const gDepth = breadthInches;
   const baseDepth = gDepth + 8; // Increases Base Deck depth by 2 inches for retail stagger
   const gShelves = parseInt(shelvesPerRack) || 4; // Number of ADJUSTABLE shelves (excludes base)
   const isDouble = dimensions.isDoubleSided;
+
+  // Pre-compute upright X positions for all gondola bays
+  const gondolaUprights = isGondola
+    ? (() => {
+      const xs = [];
+      let cx = 0;
+      xs.push(cx);
+      bays.forEach((b) => {
+        cx += getBayInches(b);
+        xs.push(cx);
+      });
+      return xs;
+    })()
+    : [];
 
   const uprightW = 2;
   const baseDeckH = 6;
@@ -94,8 +187,8 @@ const RackSchematic = ({ item }) => {
 
   // Side view boundaries to prevent SVG clipping
   const centerUprightX = 0;
-  const sideMinX = isDouble ? -baseDepth - 15 : -15;
-  const sideMaxX = uprightW + baseDepth + 35;
+  const sideMinX = isDouble ? -baseDepth - 8 : -8;
+  const sideMaxX = uprightW + baseDepth + 20;
   const sideViewWidth = sideMaxX - sideMinX;
 
   // --- UI Theming ---
@@ -138,8 +231,8 @@ const RackSchematic = ({ item }) => {
       {/* ========================================= */}
       {isGondola ? (
         <div className="flex flex-row items-center justify-center gap-2 sm:gap-6 w-full">
-          {/* GONDOLA FRONT ELEVATION - 65% Width */}
-          <div className="flex flex-col items-center w-[50%] border-r border-gray-700 pr-2 sm:pr-4">
+          {/* GONDOLA FRONT ELEVATION - multi-bay */}
+          <div className="flex flex-col items-center w-[65%] border-r border-gray-700 pr-2 sm:pr-4">
             <span className="text-[9px] sm:text-[10px] text-gray-500 mb-2 font-mono text-center">
               FRONT VIEW
             </span>
@@ -171,7 +264,7 @@ const RackSchematic = ({ item }) => {
                 fill="url(#gridG)"
               />
 
-              {/* Front View Height Label (NEW) */}
+              {/* Height label */}
               <line
                 x1="-5"
                 y1="0"
@@ -205,149 +298,153 @@ const RackSchematic = ({ item }) => {
                 textAnchor="end"
                 dominantBaseline="middle"
               >
-                {heightFt}'
+                {heightInches}"
               </text>
 
-              {/* Back Cladding */}
-              <rect
-                x={uprightW}
-                y="0"
-                width={gWidth - uprightW * 2}
-                height={gHeight - baseDeckH}
-                fill="#374151"
-                stroke="#4B5563"
-                strokeWidth="0.5"
-              />
-
-              {/* Left & Right Uprights */}
-              <rect
-                x="0"
-                y="0"
-                width={uprightW}
-                height={gHeight}
-                fill="#6B7280"
-                stroke="#4B5563"
-                strokeWidth="0.5"
-              />
-              <rect
-                x={gWidth - uprightW}
-                y="0"
-                width={uprightW}
-                height={gHeight}
-                fill="#6B7280"
-                stroke="#4B5563"
-                strokeWidth="0.5"
-              />
-
-              {/* Base Deck */}
-              <rect
-                x="0"
-                y={gHeight - baseDeckH}
-                width={gWidth}
-                height={baseDeckH}
-                fill="#0F766E"
-                stroke="#0D9488"
-                strokeWidth="0.5"
-              />
-
-              {/* Adjustable Shelves (Excludes Base) */}
-              {Array.from({ length: gShelves }).map((_, i) => {
-                const shelfY = gHeight - baseDeckH - gShelfSpacing * (i + 1);
+              {/* Per-bay: cladding + shelves + base deck */}
+              {bays.map((bay, bi) => {
+                const bx = gondolaUprights[bi];
+                const bw = getBayInches(bay);
+                const bayLabel = isCustomBay(bay) ? `${bay.val}"` : `${bay} '`;
                 return (
-                  <g key={`gshelf-${i}`}>
+                  <g key={`gbay-${bi}`}>
+                    {/* Back Cladding */}
                     <rect
-                      x={uprightW}
-                      y={shelfY}
-                      width={gWidth - uprightW * 2}
-                      height={shelfThickness}
-                      fill="#14B8A6"
+                      x={bx + uprightW}
+                      y="0"
+                      width={bw - uprightW}
+                      height={gHeight - baseDeckH}
+                      fill="#374151"
+                      stroke="#4B5563"
+                      strokeWidth="0.3"
+                    />
+                    {/* Base Deck */}
+                    <rect
+                      x={bx}
+                      y={gHeight - baseDeckH}
+                      width={bw}
+                      height={baseDeckH}
+                      fill="#0F766E"
                       stroke="#0D9488"
+                      strokeWidth="0.3"
+                    />
+                    {/* Shelves */}
+                    {Array.from({ length: gShelves }).map((_, i) => {
+                      const shelfY =
+                        gHeight - baseDeckH - gShelfSpacing * (i + 1);
+                      return (
+                        <g key={`gbay${bi}-shelf-${i}`}>
+                          <rect
+                            x={bx + uprightW}
+                            y={shelfY}
+                            width={bw - uprightW}
+                            height={shelfThickness}
+                            fill="#14B8A6"
+                            stroke="#0D9488"
+                            strokeWidth="0.3"
+                          />
+                          {dimensions.hasStopper && (
+                            <rect
+                              x={bx + uprightW}
+                              y={shelfY - 3}
+                              width={bw - uprightW}
+                              height="3"
+                              fill="#5EEAD4"
+                              stroke="#0D9488"
+                              strokeWidth="0.3"
+                              opacity="0.3"
+                            />
+                          )}
+                        </g>
+                      );
+                    })}
+                    {/* Bay width label */}
+                    <line
+                      x1={bx}
+                      y1={gHeight + 10}
+                      x2={bx + bw}
+                      y2={gHeight + 10}
+                      stroke="#9CA3AF"
                       strokeWidth="0.5"
                     />
-                    {dimensions.hasStopper && (
-                      <rect
-                        x={uprightW}
-                        y={shelfY - 3}
-                        width={gWidth - uprightW * 2}
-                        height="3"
-                        fill="#5EEAD4"
-                        stroke="#0D9488"
-                        strokeWidth="0.5"
-                        opacity="0.3"
-                      />
-                    )}
+                    <text
+                      x={bx + bw / 2}
+                      y={gHeight + 18}
+                      fill="#9CA3AF"
+                      fontSize="5"
+                      textAnchor="middle"
+                      fontWeight="bold"
+                    >
+                      {bayLabel}
+                    </text>
                   </g>
                 );
               })}
 
-              {/* Width Label */}
-              <line
-                x1="0"
-                y1={gHeight + 10}
-                x2={gWidth}
-                y2={gHeight + 10}
-                stroke="#9CA3AF"
-                strokeWidth="0.5"
-              />
-              <text
-                x={gWidth / 2}
-                y={gHeight + 18}
-                fill="#9CA3AF"
-                fontSize="5"
-                textAnchor="middle"
-                fontWeight="bold"
-              >
-                {bays[0]}' Width
-              </text>
+              {/* All uprights (shared stands) */}
+              {gondolaUprights.map((ux, ui) => (
+                <rect
+                  key={`gupright-${ui}`}
+                  x={ux}
+                  y="0"
+                  width={uprightW}
+                  height={gHeight}
+                  fill="#6B7280"
+                  stroke="#4B5563"
+                  strokeWidth="0.5"
+                />
+              ))}
             </svg>
           </div>
 
           {/* GONDOLA SIDE ELEVATION - 35% Width */}
-          {/* GONDOLA SIDE ELEVATION - 50% Width to match Front View scale */}
-          <div className="flex flex-col items-center w-[50%] pl-1 sm:pl-4">
+          <div className="flex flex-col items-center w-[35%] pl-1 sm:pl-4">
             <span className="text-[9px] sm:text-[10px] text-gray-500 mb-2 font-mono text-center">
               SIDE VIEW
             </span>
             <svg
-              // ViewBox shifted to -20 at the top to make room for the top label
-              viewBox={`${sideMinX} -10 ${sideViewWidth} ${gHeight + 35}`}
+              viewBox={`${sideMinX} -10 ${sideViewWidth + (dimensions.useCustomBreadths ? 18 : 0)} ${gHeight + 35}`}
               className="w-full max-h-40 object-contain drop-shadow-md"
             >
-              {/* Top Depth Label (Moved Above Rack) */}
-              <line
-                x1={0}
-                y1={gHeight + 10}
-                x2={uprightW + gDepth}
-                y2={gHeight + 10}
-                stroke="#9CA3AF"
-                strokeWidth="0.5"
-              />
-              <line
-                x1={0}
-                y1={gHeight + 12}
-                x2={0}
-                y2={gHeight + 8}
-                stroke="#9CA3AF"
-                strokeWidth="0.5"
-              />
-              <line
-                x1={uprightW + gDepth}
-                y1={gHeight + 12}
-                x2={uprightW + gDepth}
-                y2={gHeight + 8}
-                stroke="#9CA3AF"
-                strokeWidth="0.5"
-              />
-              <text
-                x={gDepth / 2}
-                y={gHeight + 18}
-                fill="#9CA3AF"
-                fontSize="5"
-                textAnchor="middle"
-                fontWeight="bold"
-              >
-                {gDepth}"
-              </text>
+              {/* Bottom Depth Label - shown only when NOT using mixed depths */}
+              {!dimensions.useCustomBreadths && (
+                <>
+                  <line
+                    x1={0}
+                    y1={gHeight + 10}
+                    x2={uprightW + gDepth}
+                    y2={gHeight + 10}
+                    stroke="#9CA3AF"
+                    strokeWidth="0.5"
+                  />
+                  <line
+                    x1={0}
+                    y1={gHeight + 12}
+                    x2={0}
+                    y2={gHeight + 8}
+                    stroke="#9CA3AF"
+                    strokeWidth="0.5"
+                  />
+                  <line
+                    x1={uprightW + gDepth}
+                    y1={gHeight + 12}
+                    x2={uprightW + gDepth}
+                    y2={gHeight + 8}
+                    stroke="#9CA3AF"
+                    strokeWidth="0.5"
+                  />
+                  <text
+                    x={gDepth / 2}
+                    y={gHeight + 18}
+                    fill="#9CA3AF"
+                    fontSize="5"
+                    textAnchor="middle"
+                    fontWeight="bold"
+                  >
+                    {`${gDepth}"`}
+                  </text>
+                </>
+              )}
 
               {/* Central/Back Upright */}
               <rect
@@ -373,22 +470,66 @@ const RackSchematic = ({ item }) => {
                 {/* Shelves Right */}
                 {Array.from({ length: gShelves }).map((_, i) => {
                   const shelfY = gHeight - baseDeckH - gShelfSpacing * (i + 1);
+                  let layerDepth = gDepth;
+                  if (
+                    dimensions.useCustomBreadths &&
+                    Array.isArray(dimensions.customBreadths)
+                  ) {
+                    const rawL = dimensions.customBreadths[i];
+                    if (rawL !== undefined) {
+                      if (rawL === "custom") {
+                        const customVal =
+                          dimensions.customBreadthsVals?.[i] ||
+                          dimensions.customBreadth ||
+                          "10";
+                        layerDepth = parseFloat(customVal) || 0;
+                      } else {
+                        layerDepth = parseFloat(rawL) || 0;
+                      }
+                    }
+                  }
+
                   return (
                     <g key={`rshelf-${i}`}>
                       <polygon
-                        points={`${centerUprightX + uprightW},${shelfY} ${centerUprightX + uprightW + gDepth},${shelfY} ${centerUprightX + uprightW + gDepth},${shelfY + shelfThickness} ${centerUprightX + uprightW},${shelfY + shelfThickness}`}
+                        points={`${centerUprightX + uprightW},${shelfY} ${centerUprightX + uprightW + layerDepth},${shelfY} ${centerUprightX + uprightW + layerDepth},${shelfY + shelfThickness} ${centerUprightX + uprightW},${shelfY + shelfThickness}`}
                         fill="#14B8A6"
                         stroke="#0D9488"
                         strokeWidth="0.5"
                       />
                       {dimensions.hasStopper && (
                         <rect
-                          x={centerUprightX + uprightW + gDepth - 0.5}
+                          x={centerUprightX + uprightW + layerDepth - 0.5}
                           y={shelfY - 3}
                           width="0.5"
                           height="3"
                           fill="#5EEAD4"
                         />
+                      )}
+                      {/* Per-shelf depth label when mixed depths are used */}
+                      {dimensions.useCustomBreadths && (
+                        <>
+                          <line
+                            x1={centerUprightX + uprightW + layerDepth + 1}
+                            y1={shelfY + shelfThickness / 2}
+                            x2={centerUprightX + uprightW + layerDepth + 6}
+                            y2={shelfY + shelfThickness / 2}
+                            stroke="#6EE7B7"
+                            strokeWidth="0.5"
+                            strokeDasharray="1 1"
+                          />
+                          <text
+                            x={centerUprightX + uprightW + layerDepth + 7}
+                            y={shelfY + shelfThickness / 2}
+                            fill="#6EE7B7"
+                            fontSize="4"
+                            fontWeight="bold"
+                            textAnchor="start"
+                            dominantBaseline="middle"
+                          >
+                            {layerDepth}"
+                          </text>
+                        </>
                       )}
                     </g>
                   );
@@ -410,17 +551,36 @@ const RackSchematic = ({ item }) => {
                   {Array.from({ length: gShelves }).map((_, i) => {
                     const shelfY =
                       gHeight - baseDeckH - gShelfSpacing * (i + 1);
+                    let layerDepth = gDepth;
+                    if (
+                      dimensions.useCustomBreadths &&
+                      Array.isArray(dimensions.customBreadths)
+                    ) {
+                      const rawL = dimensions.customBreadths[i];
+                      if (rawL !== undefined) {
+                        if (rawL === "custom") {
+                          const customVal =
+                            dimensions.customBreadthsVals?.[i] ||
+                            dimensions.customBreadth ||
+                            "10";
+                          layerDepth = parseFloat(customVal) || 0;
+                        } else {
+                          layerDepth = parseFloat(rawL) || 0;
+                        }
+                      }
+                    }
+
                     return (
                       <g key={`lshelf-${i}`}>
                         <polygon
-                          points={`${centerUprightX},${shelfY} ${centerUprightX - gDepth},${shelfY} ${centerUprightX - gDepth},${shelfY + shelfThickness} ${centerUprightX},${shelfY + shelfThickness}`}
+                          points={`${centerUprightX},${shelfY} ${centerUprightX - layerDepth},${shelfY} ${centerUprightX - layerDepth},${shelfY + shelfThickness} ${centerUprightX},${shelfY + shelfThickness}`}
                           fill="#14B8A6"
                           stroke="#0D9488"
                           strokeWidth="0.5"
                         />
                         {dimensions.hasStopper && (
                           <rect
-                            x={centerUprightX - gDepth}
+                            x={centerUprightX - layerDepth}
                             y={shelfY - 3}
                             width="0.5"
                             height="3"
@@ -469,7 +629,7 @@ const RackSchematic = ({ item }) => {
           {/* FRONT ELEVATION (WIDTH) - 65% Width */}
           <div className="flex flex-col items-center w-[65%] border-r border-gray-700 pr-2 sm:pr-4">
             <span className="text-[9px] sm:text-[10px] text-gray-500 mb-2 font-mono text-center">
-              FRONT VIEW (WIDTH)
+              FRONT VIEW
             </span>
             <svg
               viewBox={`0 0 ${frontSvgWidth} ${svgHeight + 20}`}
@@ -511,19 +671,41 @@ const RackSchematic = ({ item }) => {
                 </g>
               ))}
 
-              {pigeonDividersX.map((x, idx) => (
-                <line
-                  key={`f-div-${idx}`}
-                  x1={x}
-                  y1={topShelfY}
-                  x2={x}
-                  y2={bottomShelfY}
-                  stroke="#FB923C"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeDasharray="4 3"
-                />
-              ))}
+              {/* Vertical Dividers for Pigeon Hole Rack (Supports Custom Columns per Shelf) */}
+              {isPigeon &&
+                shelves.slice(0, -1).map((yTop, sIdx) => {
+                  const yBottom = shelves[sIdx + 1];
+                  const rawCols =
+                    dimensions.useCustomColumns &&
+                      Array.isArray(dimensions.customColumns) &&
+                      dimensions.customColumns[sIdx] !== undefined
+                      ? dimensions.customColumns[sIdx]
+                      : dimensions.columns;
+                  const cols =
+                    rawCols === "" ? 3 : Math.max(1, parseInt(rawCols) || 3);
+
+                  if (cols <= 1) return null;
+
+                  const colWidthPixels = (totalWidthFt * scale) / cols;
+                  const dividerLines = [];
+                  for (let i = 1; i < cols; i++) {
+                    dividerLines.push(paddingX + i * colWidthPixels);
+                  }
+
+                  return dividerLines.map((x, dIdx) => (
+                    <line
+                      key={`f-div-${sIdx}-${dIdx}`}
+                      x1={x}
+                      y1={yTop}
+                      x2={x}
+                      y2={yBottom}
+                      stroke="#FB923C"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeDasharray="3 3"
+                    />
+                  ));
+                })}
 
               {frontUprights.map((x, idx) => (
                 <line
@@ -561,7 +743,7 @@ const RackSchematic = ({ item }) => {
                 textAnchor="end"
                 dominantBaseline="middle"
               >
-                {heightFt}'
+                {heightInches}"
               </text>
               <line
                 x1={paddingX - 8}
@@ -723,36 +905,85 @@ const RackSchematic = ({ item }) => {
           ) : (
             <div className="flex flex-col items-center w-[35%] pl-1 sm:pl-2">
               <span className="text-[9px] sm:text-[10px] text-gray-500 mb-2 font-mono text-center">
-                SIDE VIEW (DEPTH)
+                SIDE VIEW
               </span>
               <svg
-                viewBox={`0 0 ${sideSvgWidth + 20} ${svgHeight + 20}`}
+                viewBox={`0 0 ${sideSvgWidth + (isWall && dimensions.useCustomBreadths ? 55 : 20)} ${svgHeight + 20}`}
                 className="w-full max-h-40 object-contain drop-shadow-md"
               >
-                {shelves.map((y, idx) => (
-                  <g key={`s-shelf-${idx}`}>
-                    <line
-                      x1={paddingX}
-                      y1={y}
-                      x2={paddingX + depthFt * scale}
-                      y2={y}
-                      stroke={themeColor}
-                      strokeWidth="4"
-                      strokeLinecap="round"
-                    />
-                    {isWall && dimensions.hasStopper && (
+                {shelves.map((y, idx) => {
+                  let layerBreadthInches = breadthInches;
+                  if (
+                    isWall &&
+                    dimensions.useCustomBreadths &&
+                    Array.isArray(dimensions.customBreadths)
+                  ) {
+                    const layerIdx = shelvesPerRack - 1 - idx;
+                    const rawL = dimensions.customBreadths[layerIdx];
+                    if (rawL !== undefined) {
+                      if (rawL === "custom") {
+                        const customVal =
+                          dimensions.customBreadthsVals?.[layerIdx] ||
+                          dimensions.customBreadth ||
+                          "10";
+                        layerBreadthInches = parseFloat(customVal) || 0;
+                      } else {
+                        layerBreadthInches = parseFloat(rawL) || 0;
+                      }
+                    }
+                  }
+                  const layerDepthFt = layerBreadthInches / 12;
+
+                  return (
+                    <g key={`s-shelf-${idx}`}>
                       <line
-                        x1={paddingX + depthFt * scale}
+                        x1={paddingX}
                         y1={y}
-                        x2={paddingX + depthFt * scale}
-                        y2={y - (3 / 12) * scale}
-                        stroke="#818CF8"
-                        strokeWidth="6"
+                        x2={paddingX + layerDepthFt * scale}
+                        y2={y}
+                        stroke={themeColor}
+                        strokeWidth="4"
                         strokeLinecap="round"
                       />
-                    )}
-                  </g>
-                ))}
+                      {isWall && dimensions.hasStopper && (
+                        <line
+                          x1={paddingX + layerDepthFt * scale}
+                          y1={y}
+                          x2={paddingX + layerDepthFt * scale}
+                          y2={y - (3 / 12) * scale}
+                          stroke="#818CF8"
+                          strokeWidth="6"
+                          strokeLinecap="round"
+                        />
+                      )}
+                      {/* Per-shelf depth label when mixed depths are used */}
+                      {isWall && dimensions.useCustomBreadths && (
+                        <>
+                          <line
+                            x1={paddingX + layerDepthFt * scale + 2}
+                            y1={y}
+                            x2={paddingX + layerDepthFt * scale + 10}
+                            y2={y}
+                            stroke="#A5B4FC"
+                            strokeWidth="0.8"
+                            strokeDasharray="2 2"
+                          />
+                          <text
+                            x={paddingX + layerDepthFt * scale + 12}
+                            y={y}
+                            fill="#A5B4FC"
+                            fontSize="10"
+                            fontWeight="bold"
+                            textAnchor="start"
+                            dominantBaseline="middle"
+                          >
+                            {layerBreadthInches}"
+                          </text>
+                        </>
+                      )}
+                    </g>
+                  );
+                })}
 
                 <line
                   x1={paddingX}
@@ -776,16 +1007,19 @@ const RackSchematic = ({ item }) => {
                   />
                 )}
 
-                <text
-                  x={paddingX + (depthFt * scale) / 2}
-                  y={svgHeight - paddingY + 25}
-                  fill="#9CA3AF"
-                  fontSize="12"
-                  fontWeight="bold"
-                  textAnchor="middle"
-                >
-                  {breadthInches}"
-                </text>
+                {/* Bottom depth label — hide for wall with mixed depths since labels are per-shelf */}
+                {!(isWall && dimensions.useCustomBreadths) && (
+                  <text
+                    x={paddingX + (depthFt * scale) / 2}
+                    y={svgHeight - paddingY + 25}
+                    fill="#9CA3AF"
+                    fontSize="12"
+                    fontWeight="bold"
+                    textAnchor="middle"
+                  >
+                    {`${breadthInches}"`}
+                  </text>
+                )}
 
                 {shelvesPerRack > 1 && (
                   <g opacity="0.8">
