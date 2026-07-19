@@ -59,6 +59,7 @@ const RackConfigurator = () => {
     angleGauge: 16,
     plateColor: "standard",
     angleColor: "standard",
+    centreSupport: false,
   });
 
   // Wall Dimensions
@@ -204,6 +205,7 @@ const RackConfigurator = () => {
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
   const [invoiceOverrides, setInvoiceOverrides] = useState({});
   const [isEditInvoiceMode, setIsEditInvoiceMode] = useState(false);
+  const [invoiceUnlistedItems, setInvoiceUnlistedItems] = useState([]);
 
   // Helper function to update a specific row's label or rate
   const handleInvoiceOverride = (originalLabel, field, value) => {
@@ -816,22 +818,76 @@ const RackConfigurator = () => {
       const element = letterheadRef.current;
       if (!element) throw new Error("Letterhead element not found");
 
-      // 1. Capture the full letterhead
-      const canvas = await html2canvas(element, {
-        backgroundColor: "#ffffff",
-        scale: 2,
-        useCORS: true,
-        imageTimeout: 0,
-        logging: false,
-      });
+      // Save original style properties to restore later
+      const originalWidth = element.style.width;
+      const originalMinWidth = element.style.minWidth;
+      const originalMaxWidth = element.style.maxWidth;
+      const originalMinHeight = element.style.minHeight;
+
+      // Force layout of the letterhead to be desktop A4 size (approx 794px wide)
+      // and allow it to shrink dynamically to fit the content exactly
+      element.style.width = "210mm";
+      element.style.minWidth = "210mm";
+      element.style.maxWidth = "210mm";
+      element.style.minHeight = "unset";
+
+      let canvas;
+      let elementRect;
+      let rowBounds = [];
+
+      try {
+        // A. Get exact coordinates of all table rows to prevent slicing across items
+        elementRect = element.getBoundingClientRect();
+        const rows = Array.from(element.querySelectorAll("table tr"));
+        rowBounds = rows.map((tr) => {
+          const rect = tr.getBoundingClientRect();
+          return {
+            top: rect.top - elementRect.top,
+            bottom: rect.bottom - elementRect.top,
+          };
+        });
+
+        // Also add the terms/note section block at the bottom so it doesn't slice in half
+        const noteDiv = element.querySelector(".mt-8");
+        if (noteDiv) {
+          const rect = noteDiv.getBoundingClientRect();
+          rowBounds.push({
+            top: rect.top - elementRect.top,
+            bottom: rect.bottom - elementRect.top,
+          });
+        }
+
+        // 1. Capture the full letterhead
+        canvas = await html2canvas(element, {
+          backgroundColor: "#ffffff",
+          scale: 2,
+          useCORS: true,
+          imageTimeout: 0,
+          logging: false,
+          windowWidth: 794,
+        });
+      } finally {
+        // Restore original style properties
+        element.style.width = originalWidth;
+        element.style.minWidth = originalMinWidth;
+        element.style.maxWidth = originalMaxWidth;
+        element.style.minHeight = originalMinHeight;
+      }
+
+      // B. Convert DOM coordinates to canvas pixels based on actual captured size
+      const scaleFactor = canvas.width / elementRect.width;
+      const rowBoundsPx = rowBounds.map((b) => ({
+        top: b.top * scaleFactor,
+        bottom: b.bottom * scaleFactor,
+      }));
 
       // 2. Set up PDF dimensions
       const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
       const pageW = pdf.internal.pageSize.getWidth();
       const pageH = pdf.internal.pageSize.getHeight();
 
-      const HEADER_H = 14;
-      const FOOTER_H = 10;
+      const HEADER_H = 20;
+      const FOOTER_H = 15;
 
       // Page 1 has no top header (it's in the canvas), so it uses more canvas
       const page1ContentH = pageH - FOOTER_H;
@@ -842,31 +898,61 @@ const RackConfigurator = () => {
       const page1PxH = page1ContentH * pxPerMm;
       const pageNPxH = pageNContentH * pxPerMm;
 
-      const remainingAfterP1 = Math.max(0, canvas.height - page1PxH);
-      const totalPages = 1 + (remainingAfterP1 > 0 ? Math.ceil(remainingAfterP1 / pageNPxH) : 0);
-
       const today = new Date().toLocaleDateString("en-IN", {
         day: "2-digit", month: "short", year: "numeric",
       });
 
+      // C. Pre-calculate dynamic layout slices based on item boundary breaks
       let srcY = 0;
+      let pageIdx = 0;
+      const slices = [];
 
-      for (let pageIdx = 0; pageIdx < totalPages; pageIdx++) {
-        if (pageIdx > 0) pdf.addPage();
-
+      // Add a 5px tolerance to prevent tiny floating-point rounding pixel overflows from creating extra pages
+      while (srcY < canvas.height - 5) {
         const isFirstPage = pageIdx === 0;
         const contentPxH = isFirstPage ? page1PxH : pageNPxH;
-        const imageY_mm = isFirstPage ? 0 : HEADER_H;
-        const srcH = Math.min(contentPxH, canvas.height - srcY);
+        const idealBottom = srcY + contentPxH;
 
-        // 3. Slice this page portion
+        let srcH = Math.min(contentPxH, canvas.height - srcY);
+
+        // If not the very end, adjust division to prevent horizontal line splitting in rows
+        if (idealBottom < canvas.height) {
+          const intersectingRow = rowBoundsPx.find(
+            (r) => r.top < idealBottom && r.bottom > idealBottom
+          );
+          // Make sure we aren't breaking in a way that goes backward indefinitely
+          if (intersectingRow && intersectingRow.top > srcY) {
+            srcH = intersectingRow.top - srcY;
+          }
+        }
+
+        slices.push({
+          srcY,
+          srcH,
+          imageY_mm: isFirstPage ? 0 : HEADER_H
+        });
+
+        srcY += srcH;
+        pageIdx++;
+      }
+
+      const totalPages = slices.length;
+
+      // D. Draw each calculated slice onto its corresponding PDF page
+      for (let i = 0; i < totalPages; i++) {
+        if (i > 0) pdf.addPage();
+
+        const isFirstPage = i === 0;
+        const { srcY: sliceY, srcH: sliceH, imageY_mm } = slices[i];
+
+        // Slice this page portion
         const sliceCanvas = document.createElement("canvas");
         sliceCanvas.width = canvas.width;
-        sliceCanvas.height = srcH;
-        sliceCanvas.getContext("2d").drawImage(canvas, 0, -srcY);
+        sliceCanvas.height = sliceH;
+        sliceCanvas.getContext("2d").drawImage(canvas, 0, -sliceY);
 
         const sliceData = sliceCanvas.toDataURL("image/jpeg", 0.92);
-        const sliceH_mm = srcH / pxPerMm;
+        const sliceH_mm = sliceH / pxPerMm;
         pdf.addImage(sliceData, "JPEG", 0, imageY_mm, pageW, sliceH_mm);
 
         // Continuation header (pages 2+)
@@ -874,15 +960,15 @@ const RackConfigurator = () => {
           pdf.setFillColor(255, 255, 255);
           pdf.rect(0, 0, pageW, HEADER_H, "F");
           pdf.setFont("helvetica", "bold");
-          pdf.setFontSize(11);
+          pdf.setFontSize(14);
           pdf.setTextColor(20, 20, 20);
-          pdf.text("VARUN ENTERPRISE", pageW / 2, 6, { align: "center" });
+          pdf.text("VARUN ENTERPRISE", pageW / 2, 9, { align: "center" });
           pdf.setFont("helvetica", "normal");
-          pdf.setFontSize(7);
+          pdf.setFontSize(9);
           pdf.setTextColor(80, 80, 80);
           pdf.text(
             "M: 9724703241 | 9824101301  |  Quotation (Contd.)",
-            pageW / 2, 10.5, { align: "center" }
+            pageW / 2, 15, { align: "center" }
           );
           pdf.setDrawColor(60, 60, 60);
           pdf.setLineWidth(0.4);
@@ -895,17 +981,15 @@ const RackConfigurator = () => {
         pdf.rect(0, footerTopY, pageW, FOOTER_H, "F");
         pdf.setDrawColor(160, 160, 160);
         pdf.setLineWidth(0.3);
-        pdf.line(8, footerTopY + 1.5, pageW - 8, footerTopY + 1.5);
-        const textY = footerTopY + 7;
+        pdf.line(8, footerTopY + 2.5, pageW - 8, footerTopY + 2.5);
+        const textY = footerTopY + 10;
         pdf.setFont("helvetica", "italic");
-        pdf.setFontSize(7);
+        pdf.setFontSize(9);
         pdf.setTextColor(100, 100, 100);
         pdf.text("VARUN Enterprise", 8, textY);
         pdf.setFont("helvetica", "normal");
-        pdf.text("Page " + (pageIdx + 1) + " of " + totalPages, pageW / 2, textY, { align: "center" });
+        pdf.text("Page " + (i + 1) + " of " + totalPages, pageW / 2, textY, { align: "center" });
         pdf.text(today, pageW - 8, textY, { align: "right" });
-
-        srcY += contentPxH;
       }
 
       // 4. Share or download
@@ -916,7 +1000,6 @@ const RackConfigurator = () => {
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
           title: "VARUN Enterprise Quotation",
-          text: "Please find the attached quotation.",
           files: [file],
         });
       } else {
@@ -1178,6 +1261,31 @@ const RackConfigurator = () => {
                               <option value={14}>14G (Heavy)</option>
                             </select>
                           </div>
+                        </div>
+
+                        {/* CENTRE SUPPORT */}
+                        <div className="mt-4 pt-4 border-t border-gray-100 flex items-center justify-between">
+                          <div>
+                            <span className="block text-sm font-semibold text-gray-800">
+                              Centre Support
+                            </span>
+
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              name="centreSupport"
+                              checked={slottedDims.centreSupport}
+                              onChange={(e) =>
+                                setSlottedDims((prev) => ({
+                                  ...prev,
+                                  centreSupport: e.target.checked,
+                                }))
+                              }
+                              className="sr-only peer"
+                            />
+                            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                          </label>
                         </div>
                       </div>
 
@@ -2974,14 +3082,37 @@ const RackConfigurator = () => {
                                     <option value="2">2 ft (24")</option>
                                     <option value="3">3 ft (36")</option>
                                     <option value="4">4 ft (48")</option>
+                                    <option value="custom">Custom Size</option>
                                   </>
                                 ) : (
                                   <>
                                     <option value="35.5">35.5" (~3 ft)</option>
                                     <option value="47.5">47.5" (~4 ft)</option>
+                                    <option value="custom">Custom Size</option>
                                   </>
                                 )}
                               </select>
+
+                              {(isSlotted ? slottedDims.length : wallDims.length) === "custom" && (
+                                <div className="mt-2 animate-in slide-in-from-top-1">
+                                  <input
+                                    type="number"
+                                    placeholder="Enter in inches"
+                                    value={isSlotted ? slottedDims.customLength : wallDims.customLength}
+                                    onChange={(e) =>
+                                      isSlotted
+                                        ? setSlottedDims({ ...slottedDims, customLength: e.target.value })
+                                        : setWallDims({ ...wallDims, customLength: e.target.value })
+                                    }
+                                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition"
+                                  />
+                                  {(isSlotted ? slottedDims.customLength : wallDims.customLength) > 48 && (
+                                    <p className="text-red-500 text-xs mt-1 font-semibold">
+                                      Maximum size is 48"
+                                    </p>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           )}
 
@@ -3013,6 +3144,7 @@ const RackConfigurator = () => {
                                     <option value="15">15" (1.25 ft)</option>
                                     <option value="18">18" (1.5 ft)</option>
                                     <option value="24">24" (2 ft)</option>
+                                    <option value="custom">Custom Size</option>
                                   </>
                                 ) : (
                                   <>
@@ -3021,9 +3153,31 @@ const RackConfigurator = () => {
                                     <option value="12.25">12.25"</option>
                                     <option value="14.25">14.25"</option>
                                     <option value="16.25">16.25"</option>
+                                    <option value="custom">Custom Size</option>
                                   </>
                                 )}
                               </select>
+
+                              {(isSlotted ? slottedDims.breadth : wallDims.breadth) === "custom" && (
+                                <div className="mt-2 animate-in slide-in-from-top-1">
+                                  <input
+                                    type="number"
+                                    placeholder="Enter in inches"
+                                    value={isSlotted ? slottedDims.customBreadth : wallDims.customBreadth}
+                                    onChange={(e) =>
+                                      isSlotted
+                                        ? setSlottedDims({ ...slottedDims, customBreadth: e.target.value })
+                                        : setWallDims({ ...wallDims, customBreadth: e.target.value })
+                                    }
+                                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition"
+                                  />
+                                  {(isSlotted ? slottedDims.customBreadth : wallDims.customBreadth) > (isSlotted ? 24 : 16.25) && (
+                                    <p className="text-red-500 text-xs mt-1 font-semibold">
+                                      Maximum size is {isSlotted ? '24"' : '16.25"'}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           )}
 
@@ -3076,14 +3230,37 @@ const RackConfigurator = () => {
                                     <option value="7">7 ft</option>
                                     <option value="8">8 ft</option>
                                     <option value="10">10 ft</option>
+                                    <option value="custom">Custom Size</option>
                                   </>
                                 ) : (
                                   <>
                                     <option value="4">4 ft</option>
                                     <option value="6">6 ft</option>
+                                    <option value="custom">Custom Size</option>
                                   </>
                                 )}
                               </select>
+
+                              {(isSlotted ? slottedDims.height : wallDims.height) === "custom" && (
+                                <div className="mt-2 animate-in slide-in-from-top-1">
+                                  <input
+                                    type="number"
+                                    placeholder="Enter in inches"
+                                    value={isSlotted ? slottedDims.customHeight : wallDims.customHeight}
+                                    onChange={(e) =>
+                                      isSlotted
+                                        ? setSlottedDims({ ...slottedDims, customHeight: e.target.value })
+                                        : setWallDims({ ...wallDims, customHeight: e.target.value })
+                                    }
+                                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition"
+                                  />
+                                  {(isSlotted ? slottedDims.customHeight : wallDims.customHeight) > 120 && (
+                                    <p className="text-red-500 text-xs mt-1 font-semibold">
+                                      Maximum size is 120"
+                                    </p>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           )}
 
@@ -3168,7 +3345,13 @@ const RackConfigurator = () => {
                       <div className="flex justify-end pt-4 border-t border-gray-100">
                         <button
                           onClick={handleAddCustomItem}
-                          className={`w-full sm:w-auto text-white font-bold py-3 px-8 rounded-lg transition-colors flex items-center justify-center gap-2 ${isSlotted ? "bg-blue-600 hover:bg-blue-700" : "bg-indigo-600 hover:bg-indigo-700"}`}
+                          disabled={
+                            (customItem.category === "plates" || customItem.category === "stoppers" ? ((isSlotted ? slottedDims.length : wallDims.length) === "custom" && (!(isSlotted ? slottedDims.customLength : wallDims.customLength) || (isSlotted ? slottedDims.customLength : wallDims.customLength) > 48)) : false) ||
+                            (customItem.category === "plates" || customItem.category === "brackets" ? ((isSlotted ? slottedDims.breadth : wallDims.breadth) === "custom" && (!(isSlotted ? slottedDims.customBreadth : wallDims.customBreadth) || (isSlotted ? slottedDims.customBreadth : wallDims.customBreadth) > (isSlotted ? 24 : 16.25))) : false) ||
+                            (customItem.category === "angles" || customItem.category === "channels" ? ((isSlotted ? slottedDims.height : wallDims.height) === "custom" && (!(isSlotted ? slottedDims.customHeight : wallDims.customHeight) || (isSlotted ? slottedDims.customHeight : wallDims.customHeight) > 120)) : false) ||
+                            !customItem.qty
+                          }
+                          className={`w-full sm:w-auto text-white font-bold py-3 px-8 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:bg-gray-400 disabled:cursor-not-allowed ${isSlotted ? "bg-blue-600 hover:bg-blue-700" : "bg-indigo-600 hover:bg-indigo-700"}`}
                         >
                           <PackagePlus className="w-5 h-5" /> Add Part to Quote
                         </button>
@@ -4362,20 +4545,23 @@ const RackConfigurator = () => {
 
                     const renderSnapshotItem = (
                       originalLabel,
-                      qty,
+                      baseQty,
                       baseRate,
                       baseTotal,
                       unit = "pc",
                     ) => {
-                      if (qty > 0) {
-                        const custom = invoiceOverrides[originalLabel] || {};
+                      const custom = invoiceOverrides[originalLabel] || {};
+                      const rawQty = custom.qty !== undefined ? custom.qty : baseQty;
+                      const isVisible = rawQty > 0 || (isEditInvoiceMode && custom.qty === "");
+                      if (isVisible) {
+                        const calcQty = rawQty === "" ? 0 : rawQty;
                         const displayLabel =
                           custom.label !== undefined
                             ? custom.label
                             : originalLabel;
                         const inclusiveRate =
                           custom.rate !== undefined ? custom.rate : baseRate;
-                        const inclusiveTotal = inclusiveRate * qty;
+                        const inclusiveTotal = inclusiveRate * calcQty;
 
                         snapshotGrandTotal += inclusiveTotal;
 
@@ -4458,9 +4644,25 @@ const RackConfigurator = () => {
                                 )
                               ) : (
                                 <>
-                                  <span className="text-gray-400">
-                                    {qty}
-                                    {unit} * ₹
+                                  <span className="text-gray-400 flex items-center gap-1">
+                                    {showInput ? (
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        value={rawQty}
+                                        onChange={(e) =>
+                                          handleInvoiceOverride(
+                                            originalLabel,
+                                            "qty",
+                                            e.target.value === "" ? "" : (parseFloat(e.target.value) || 0)
+                                          )
+                                        }
+                                        className="bg-gray-800 border border-dashed border-amber-500/60 rounded px-1 text-xs text-amber-300 text-right outline-none w-12 focus:border-amber-400 font-semibold mr-1"
+                                      />
+                                    ) : (
+                                      `${calcQty}`
+                                    )}
+                                    <span>{unit} * ₹</span>
                                   </span>
                                   {showInput ? (
                                     <input
@@ -4702,6 +4904,106 @@ const RackConfigurator = () => {
                                   )}
                               </>
                             )}
+
+                          {/* UNLISTED ITEMS IN SNAPSHOT */}
+                          {invoiceUnlistedItems.length > 0 && invoiceUnlistedItems.some((i) => isEditInvoiceMode || i.label.trim() !== "") && (
+                            <>
+
+                              {invoiceUnlistedItems.map((item, index) => {
+                                const rawQty = item.qty !== undefined ? item.qty : 1;
+                                const calcQty = rawQty === "" ? 0 : rawQty;
+                                const rate = item.rate || 0;
+                                const inclusiveTotal = calcQty * rate;
+                                const multiplier = applyMarkup ? 1.09 : 1;
+                                const rawCatalogPrice = rate / multiplier;
+                                const divisor = applyMarkup ? 1.18 : 1;
+                                const baseRateVal = rate / divisor;
+                                const baseTotalVal = inclusiveTotal / divisor;
+                                const showInput = isEditInvoiceMode && !isCapturing;
+                                const uid = `snap-unlisted-${index}`;
+
+                                if (!showInput && item.label.trim() === "") return null;
+
+                                snapshotGrandTotal += inclusiveTotal;
+
+                                return (
+                                  <li
+                                    key={uid}
+                                    className="flex sm:flex-row justify-between items-start sm:items-center border-b border-gray-800/50 py-1.5 gap-2"
+                                  >
+                                    <div className="flex-1 min-w-0">
+                                      {showInput ? (
+                                        <input
+                                          type="text"
+                                          placeholder="Item Description"
+                                          value={item.label}
+                                          onChange={(e) => {
+                                            const newItems = [...invoiceUnlistedItems];
+                                            newItems[index].label = e.target.value;
+                                            if (index === newItems.length - 1 && e.target.value.trim() !== "") {
+                                              newItems.push({ label: "", qty: 1, rate: 0 });
+                                            }
+                                            setInvoiceUnlistedItems(newItems);
+                                          }}
+                                          className="bg-gray-800 border border-dashed border-amber-500/60 rounded px-2 py-0.5 text-xs text-amber-300 outline-none w-full max-w-[220px] focus:border-amber-400 font-medium"
+                                        />
+                                      ) : (
+                                        <span className="text-gray-200 leading-tight block">{item.label}</span>
+                                      )}
+                                    </div>
+
+                                    <div className="flex items-center gap-2 font-mono text-xs whitespace-nowrap self-end sm:self-center">
+                                      <span className="text-gray-400 flex items-center gap-1 mr-1">
+                                        {showInput ? (
+                                          <input
+                                            type="number"
+                                            min="0"
+                                            value={rawQty}
+                                            onChange={(e) => {
+                                              const newItems = [...invoiceUnlistedItems];
+                                              newItems[index].qty = e.target.value === "" ? "" : (parseFloat(e.target.value) || 0);
+                                              if (index === newItems.length - 1) {
+                                                newItems.push({ label: "", qty: 1, rate: 0 });
+                                              }
+                                              setInvoiceUnlistedItems(newItems);
+                                            }}
+                                            className="bg-gray-800 border border-dashed border-amber-500/60 rounded px-1 text-xs text-amber-300 text-right outline-none w-12 focus:border-amber-400 font-semibold"
+                                          />
+                                        ) : (
+                                          `${calcQty}`
+                                        )}
+                                        <span>Pc * ₹</span>
+                                      </span>
+
+                                      {showInput ? (
+                                        <input
+                                          type="number"
+                                          value={rawCatalogPrice === 0 ? "" : parseFloat((rawCatalogPrice).toFixed(2))}
+                                          onChange={(e) => {
+                                            const newItems = [...invoiceUnlistedItems];
+                                            newItems[index].rate = (parseFloat(e.target.value) || 0) * multiplier;
+                                            if (index === newItems.length - 1) {
+                                              newItems.push({ label: "", qty: 1, rate: 0 });
+                                            }
+                                            setInvoiceUnlistedItems(newItems);
+                                          }}
+                                          className="bg-gray-800 border border-dashed border-amber-500/60 rounded px-1.5 py-0.5 text-xs text-amber-300 text-right outline-none w-16 focus:border-amber-400 font-semibold"
+                                        />
+                                      ) : (
+                                        <span className="text-gray-300">
+                                          {Math.round(baseRateVal * 100) / 100}
+                                        </span>
+                                      )}
+                                      <span className="text-gray-400 ml-1"> = </span>
+                                      <strong className="text-white inline-block w-16 text-right">
+                                        ₹{Math.round(baseTotalVal * 100) / 100}
+                                      </strong>
+                                    </div>
+                                  </li>
+                                );
+                              })}
+                            </>
+                          )}
                         </ul>
 
                         <div className="pt-2 mt-6">
@@ -4958,10 +5260,22 @@ const RackConfigurator = () => {
           <div className="flex flex-col items-center gap-3">
             <div className="flex justify-center items-center gap-3">
               <button
-                onClick={() => setIsEditInvoiceMode(!isEditInvoiceMode)}
+                onClick={() => {
+                  if (!isEditInvoiceMode) {
+                    const newItems = [...invoiceUnlistedItems];
+                    if (newItems.length === 0 || newItems[newItems.length - 1].label.trim() !== "") {
+                      newItems.push({ label: "", qty: 1, rate: 0 });
+                    }
+                    setInvoiceUnlistedItems(newItems);
+                  } else {
+                    const newItems = invoiceUnlistedItems.filter((i) => i.label.trim() !== "");
+                    setInvoiceUnlistedItems(newItems);
+                  }
+                  setIsEditInvoiceMode(!isEditInvoiceMode);
+                }}
                 className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold shadow-sm transition-all duration-200 border ${isEditInvoiceMode
-                    ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600 ring-2 ring-amber-300"
-                    : "bg-white hover:bg-gray-50 text-gray-700 border-gray-300 hover:border-gray-400"
+                  ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600 ring-2 ring-amber-300"
+                  : "bg-white hover:bg-gray-50 text-gray-700 border-gray-300 hover:border-gray-400"
                   }`}
               >
                 <span>
@@ -4980,6 +5294,7 @@ const RackConfigurator = () => {
                       )
                     ) {
                       setInvoiceOverrides({});
+                      setInvoiceUnlistedItems(isEditInvoiceMode ? [{ label: "", qty: 1, rate: 0 }] : []);
                     }
                   }}
                   className="flex items-center gap-1.5 px-5 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl text-sm font-bold shadow-sm transition-all duration-200"
@@ -5009,7 +5324,7 @@ const RackConfigurator = () => {
             className="bg-white text-black p-8 font-sans w-[210mm] min-h-[297mm] shadow-2xl print:shadow-none"
           >
             {/* Header */}
-            <div className="text-center border-b-2 border-gray-800 pb-4 mb-6">
+            <div className="text-center border-b-2 border-gray-800 pb-4 mb-4">
               <h1 className="text-3xl font-extrabold tracking-wide text-gray-900 mb-1">
                 VARUN ENTERPRISE
               </h1>
@@ -5080,14 +5395,17 @@ const RackConfigurator = () => {
 
                     const addRow = (
                       originalLabel,
-                      qty,
+                      baseQty,
                       baseRate,
                       baseTotal,
                       unit = "Pc",
                     ) => {
-                      if (qty > 0) {
+                      const custom = invoiceOverrides[originalLabel] || {};
+                      const rawQty = custom.qty !== undefined ? custom.qty : baseQty;
+                      const isVisible = rawQty > 0 || (isEditInvoiceMode && custom.qty === "");
+                      if (isVisible) {
+                        const calcQty = rawQty === "" ? 0 : rawQty;
                         // Look up if you've typed any custom overrides for this item
-                        const custom = invoiceOverrides[originalLabel] || {};
                         const displayLabel =
                           custom.label !== undefined
                             ? custom.label
@@ -5096,7 +5414,7 @@ const RackConfigurator = () => {
                         // This is the inclusive rate used for the final Grand Total math
                         const inclusiveRate =
                           custom.rate !== undefined ? custom.rate : baseRate;
-                        const inclusiveTotal = inclusiveRate * qty;
+                        const inclusiveTotal = inclusiveRate * calcQty;
 
                         runningGrandTotal += inclusiveTotal; // Add to final total
 
@@ -5133,8 +5451,8 @@ const RackConfigurator = () => {
                                   )
                                 }
                                 className={`w-full px-2 py-1 outline-none transition-colors border rounded font-semibold text-black ${showInput
-                                    ? "bg-amber-50 hover:bg-amber-100 focus:bg-amber-200 border-dashed border-amber-400"
-                                    : "hidden border-transparent bg-transparent"
+                                  ? "bg-amber-50 hover:bg-amber-100 focus:bg-amber-200 border-dashed border-amber-400"
+                                  : "hidden border-transparent bg-transparent"
                                   } print:hidden`}
                               />
                               <span
@@ -5144,8 +5462,28 @@ const RackConfigurator = () => {
                               </span>
                             </td>
 
-                            <td className="border border-gray-800 p-2 text-right">
-                              {isServiceCharge ? "" : `${qty} ${unit}`}
+                            {/* EDITABLE QTY */}
+                            <td className="border border-gray-800 p-1 text-right">
+                              {!isServiceCharge && showInput ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={rawQty}
+                                  onChange={(e) =>
+                                    handleInvoiceOverride(
+                                      originalLabel,
+                                      "qty",
+                                      e.target.value === "" ? "" : (parseFloat(e.target.value) || 0),
+                                    )
+                                  }
+                                  className="w-16 px-2 py-1 outline-none transition-colors border rounded font-semibold text-black text-right bg-amber-50 hover:bg-amber-100 focus:bg-amber-200 border-dashed border-amber-400 print:hidden"
+                                />
+                              ) : null}
+                              <span
+                                className={`px-2 py-1 ${!showInput && !isServiceCharge ? "block" : "hidden"} print:${isServiceCharge ? "hidden" : "block"}`}
+                              >
+                                {!isServiceCharge && `${calcQty} ${unit}`}
+                              </span>
                             </td>
 
                             {/* EDITABLE RATE (Shows Raw Catalog Price conditionally) */}
@@ -5167,8 +5505,8 @@ const RackConfigurator = () => {
                                   )
                                 }
                                 className={`w-full px-2 py-1 outline-none transition-colors border rounded font-semibold text-black text-right ${showInput
-                                    ? "bg-amber-50 hover:bg-amber-100 focus:bg-amber-200 border-dashed border-amber-400"
-                                    : "hidden border-transparent bg-transparent"
+                                  ? "bg-amber-50 hover:bg-amber-100 focus:bg-amber-200 border-dashed border-amber-400"
+                                  : "hidden border-transparent bg-transparent"
                                   } print:hidden`}
                               />
                               <span
@@ -5445,6 +5783,103 @@ const RackConfigurator = () => {
                         "Job",
                       );
 
+                    // ==========================================
+                    // 6. UNLISTED ITEMS
+                    // ==========================================
+                    invoiceUnlistedItems.forEach((item, index) => {
+                      const uid = `unlisted-${index}`;
+                      const rawQty = item.qty !== undefined ? item.qty : 1;
+                      const qty = rawQty === "" ? 0 : rawQty;
+                      const rate = item.rate || 0;
+                      const inclusiveTotal = qty * rate;
+                      runningGrandTotal += inclusiveTotal;
+
+                      const multiplier = applyMarkup ? 1.09 : 1;
+                      const rawCatalogPrice = rate / multiplier;
+                      const divisor = applyMarkup ? 1.18 : 1;
+                      const baseRateVal = rate / divisor;
+                      const baseTotalVal = inclusiveTotal / divisor;
+
+                      const showInput = isEditInvoiceMode && !isGeneratingPDF;
+
+                      rows.push(
+                        <tr key={uid}>
+                          <td className="border border-gray-800 p-2 text-center">
+                            {srNo}
+                          </td>
+                          <td className="border border-gray-800 p-1">
+                            {showInput ? (
+                              <input
+                                type="text"
+                                placeholder="Item Description"
+                                value={item.label}
+                                onChange={(e) => {
+                                  const newItems = [...invoiceUnlistedItems];
+                                  newItems[index].label = e.target.value;
+                                  if (index === newItems.length - 1 && e.target.value.trim() !== "") {
+                                    newItems.push({ label: "", qty: 1, rate: 0 });
+                                  }
+                                  setInvoiceUnlistedItems(newItems);
+                                }}
+                                className="w-full px-2 py-1 outline-none transition-colors border rounded font-semibold text-black bg-amber-50 hover:bg-amber-100 focus:bg-amber-200 border-dashed border-amber-400 print:hidden"
+                              />
+                            ) : (
+                              <span className="px-2 py-1 block">{item.label}</span>
+                            )}
+                          </td>
+                          <td className="border border-gray-800 p-1 text-right">
+                            {showInput ? (
+                              <input
+                                type="number"
+                                min="1"
+                                value={rawQty}
+                                onChange={(e) => {
+                                  const newItems = [...invoiceUnlistedItems];
+                                  newItems[index].qty = e.target.value === "" ? "" : (parseFloat(e.target.value) || 0);
+                                  if (index === newItems.length - 1) {
+                                    newItems.push({ label: "", qty: 1, rate: 0 });
+                                  }
+                                  setInvoiceUnlistedItems(newItems);
+                                }}
+                                className="w-16 px-2 py-1 outline-none transition-colors border rounded font-semibold text-black text-right bg-amber-50 hover:bg-amber-100 focus:bg-amber-200 border-dashed border-amber-400 print:hidden"
+                              />
+                            ) : (
+                              <span className="px-2 py-1 block">{`${qty} Pc`}</span>
+                            )}
+                          </td>
+                          <td className="border border-gray-800 p-1 text-right">
+                            {showInput ? (
+                              <input
+                                type="number"
+                                value={parseFloat((rawCatalogPrice).toFixed(2)) || 0}
+                                onChange={(e) => {
+                                  const newItems = [...invoiceUnlistedItems];
+                                  newItems[index].rate = (parseFloat(e.target.value) || 0) * multiplier;
+                                  if (index === newItems.length - 1) {
+                                    newItems.push({ label: "", qty: 1, rate: 0 });
+                                  }
+                                  setInvoiceUnlistedItems(newItems);
+                                }}
+                                className="w-24 px-2 py-1 outline-none transition-colors border rounded font-semibold text-black text-right bg-amber-50 hover:bg-amber-100 focus:bg-amber-200 border-dashed border-amber-400 print:hidden"
+                              />
+                            ) : (
+                              <span className="px-2 py-1 block">
+                                {baseRateVal.toLocaleString("en-IN", {
+                                  maximumFractionDigits: 2,
+                                })}
+                              </span>
+                            )}
+                          </td>
+                          <td className="border border-gray-800 p-2 text-right font-medium">
+                            {baseTotalVal.toLocaleString("en-IN", {
+                              maximumFractionDigits: 2,
+                            })}
+                          </td>
+                        </tr>
+                      );
+                      srNo++;
+                    });
+
                     // Taxes
                     const subTotal =
                       runningGrandTotal / (applyMarkup ? 1.18 : 1); // Reverse engineer subtotal if markup exists
@@ -5492,6 +5927,7 @@ const RackConfigurator = () => {
                   })()}
               </tbody>
             </table>
+
 
             {/* Terms & Conditions */}
             <div className="mt-8">

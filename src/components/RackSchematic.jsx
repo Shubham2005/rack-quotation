@@ -220,11 +220,18 @@ const RackSchematic = ({ item }) => {
 
   return (
     <div className="flex flex-col items-center bg-gray-800/50 p-4 rounded-lg border border-gray-700 w-full">
-      <p
-        className={`text-xs font-bold uppercase tracking-wider flex items-center gap-2 mb-4 ${titleColor}`}
-      >
-        {title}
-      </p>
+      <div className="flex flex-col items-center mb-4">
+        <p
+          className={`text-xs font-bold uppercase tracking-wider flex items-center gap-2 ${titleColor}`}
+        >
+          {title}
+        </p>
+        {bays.length > 1 && (
+          <span className="text-[10px] font-medium text-gray-400 mt-1 uppercase tracking-wider bg-gray-900/50 px-2.5 py-0.5 rounded-full border border-gray-700 shadow-sm">
+            Total Length: {((isGondola ? gondolaTotalWidthInches / 12 : totalWidthFt)).toFixed(2).replace(/\.00$/, '')} ft
+          </span>
+        )}
+      </div>
 
       {/* ========================================= */}
       {/*             GONDOLA SCHEMATIC             */}

@@ -1,5 +1,6 @@
 export const MOCK_PRICING = {
   slotted: {
+    centreSupport: { 3: 120, 4: 160 },
     hardware: { bolt: 2.5, corner: 7, bush: 5 },
     colorSurcharge: {
       plates: {

@@ -164,7 +164,7 @@ export const calculateQuote = ({
           : rawBayVal;
         const displayLength = isCustomBay ? `${rawBayVal}"` : `${rawBayVal}'`;
 
-        const pPrice =
+        let pPrice =
           (MOCK_PRICING.slotted.plates[`${pricingLength}-${pricingBreadth}`]?.[
             d.plateGauge
           ] || 0) +
@@ -173,7 +173,14 @@ export const calculateQuote = ({
                 `${pricingLength}-${pricingBreadth}`
               ] || 0
             : 0);
-        const pLabel = `${displayLength}x${displayBreadth} Plate (${d.plateGauge}G)${d.plateColor === "custom" ? ` - Custom Color` : ""}`;
+
+        if (d.centreSupport) {
+          const supportCost = pricingLength === "4" ? MOCK_PRICING.slotted.centreSupport[4] : MOCK_PRICING.slotted.centreSupport[3];
+          pPrice += supportCost || 0;
+        }
+
+        const supportLabel = d.centreSupport ? " (w/ Centre Support)" : "";
+        const pLabel = `${displayLength}x${displayBreadth} Plate (${d.plateGauge}G)${supportLabel}${d.plateColor === "custom" ? ` - Custom Color` : ""}`;
         if (!sPlatesGrp[pLabel]) sPlatesGrp[pLabel] = { qty: 0, price: pPrice };
         sPlatesGrp[pLabel].qty += totalPlatesInRow;
         itemPlatesCost += totalPlatesInRow * pPrice;
